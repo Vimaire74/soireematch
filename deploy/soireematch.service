@@ -1,0 +1,16 @@
+[Unit]
+Description=Soiree Match - site + inscriptions
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/soireematch
+# Mets ici le chemin exact renvoyé par :  which node
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3
+User=www-data
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

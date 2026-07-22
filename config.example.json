@@ -1,0 +1,8 @@
+{
+  "port": 8090,
+  "adminUser": "marc",
+  "adminPass": "CHANGE-MOI-mot-de-passe-solide",
+  "sessionSecret": "CHANGE-MOI-chaine-aleatoire-longue",
+  "reportToken": "CHANGE-MOI-jeton-aleatoire-pour-le-rapport",
+  "siteUrl": "https://soireematch.com"
+}

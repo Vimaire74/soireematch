@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Soirée Match — Rencontres pour célibataires à Lausanne</title>
+<meta name="description" content="Des soirées rencontres originales pour célibataires à Lausanne. Pas d'applis, pas de bla-bla : de vraies rencontres, en vrai, animées par un thérapeute.">
+<style>
+  :root{
+    /* fallback = bleu-vert ; le motif --pat est injecté par le script */
+    --bg:#ecf4f3;--ink:#1e2f30;--muted:#566b6a;--accent:#ff7a6b;--accent-dark:#eb6353;
+    --card:#f6fbfa;--line:#d3e5e2;--alt-bg:#e0eeec;--hero-a:#2f7d8a;--hero-b:#6fc0c0;--insc-bg:#dff0ed;--pat-ink:#2f7d8a;
+  }
+  /* ============ 4 PALETTES — tirées au hasard à chaque rafraîchissement ============ */
+
+  /* Rosé — chaleureux, romantique */
+  body[data-theme="rose"]{
+    --bg:#faf3f4;--ink:#33232a;--muted:#8a6f78;--accent:#e5486a;--accent-dark:#c8385a;
+    --card:#fdf7f8;--line:#f0dde3;--alt-bg:#f7e9ee;--hero-a:#d94f77;--hero-b:#eaa6b4;--insc-bg:#f8ebef;--pat-ink:#c14e6e;
+  }
+  /* Bleu-vert — aqua doux, frais */
+  body[data-theme="aqua"]{
+    --bg:#ecf4f3;--ink:#1e2f30;--muted:#566b6a;--accent:#ff7a6b;--accent-dark:#eb6353;
+    --card:#f6fbfa;--line:#d3e5e2;--alt-bg:#e0eeec;--hero-a:#2f7d8a;--hero-b:#6fc0c0;--insc-bg:#dff0ed;--pat-ink:#2f7d8a;
+  }
+  /* Bleu brume — bleus froids en couches douces */
+  body[data-theme="brume"]{
+    --bg:#eef3f8;--ink:#1c2b3a;--muted:#5c6b7a;--accent:#ff6b6b;--accent-dark:#e85555;
+    --card:#f8fbfd;--line:#d7e2ee;--alt-bg:#e4edf6;--hero-a:#2c5f8a;--hero-b:#54a0c9;--insc-bg:#e2ecf5;--pat-ink:#2c5f8a;
+  }
+  /* Terracotta — chaud, terreux, convivial */
+  body[data-theme="terracotta"]{
+    --bg:#fbf3ea;--ink:#3a2a20;--muted:#8a6f5c;--accent:#d1603d;--accent-dark:#b84d2c;
+    --card:#fffaf4;--line:#ecdccb;--alt-bg:#f6e7d8;--hero-a:#c85a3a;--hero-b:#e0a06a;--insc-bg:#f6e8da;--pat-ink:#b06a3f;
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.65;transition:background .3s,color .3s;
+    font-size:17px;
+  }
+  h1,h2,h3{font-weight:700;line-height:1.15;letter-spacing:-0.02em}
+  a{color:var(--accent-dark)}
+  .wrap{max-width:900px;margin:0 auto;padding:0 22px}
+  .btn{
+    display:inline-block;background:var(--accent);color:#fff;text-decoration:none;
+    padding:16px 32px;border-radius:40px;font-weight:600;font-size:1.05rem;
+    box-shadow:0 6px 18px rgba(0,0,0,.18);transition:transform .15s,box-shadow .15s;
+  }
+  .btn:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(0,0,0,.28)}
+
+  /* ===== SÉLECTEUR DE PALETTE (à retirer avant la mise en ligne) ===== */
+  .topbar{
+    background:#161b24;color:#fff;text-align:center;
+    padding:7px 12px;font-size:.72rem;font-weight:600;
+    text-transform:uppercase;letter-spacing:.28em;
+  }
+  .topbar span{opacity:.82}
+
+  /* ===== MOTIF MUDÉJAR (filigrane) ===== */
+  header.hero, .alt, #inscription{position:relative;overflow:hidden}
+  header.hero > .wrap, .alt > .wrap, #inscription > .wrap{position:relative;z-index:1}
+  header.hero::before, .alt::before, #inscription::before{
+    content:"";position:absolute;inset:-10px;pointer-events:none;
+    -webkit-mask-image:var(--pat);mask-image:var(--pat);
+    -webkit-mask-size:var(--patsize,48px);mask-size:var(--patsize,48px);
+    -webkit-mask-repeat:repeat;mask-repeat:repeat;
+  }
+  header.hero::before{background:#ffffff;opacity:.19}
+  .alt::before{background:var(--pat-ink);opacity:.11}
+  #inscription::before{background:var(--pat-ink);opacity:.12}
+
+  /* HERO */
+  header.hero{
+    background:linear-gradient(135deg,var(--hero-a) 0%,var(--hero-b) 100%);
+    color:#fff;text-align:center;padding:76px 22px 84px;transition:background .3s;
+  }
+  .hero .kicker{text-transform:uppercase;letter-spacing:3px;font-size:.8rem;opacity:.92;font-weight:600}
+  .hero h1{font-size:clamp(2.3rem,7vw,3.6rem);margin:16px 0 12px}
+  .hero p.lead{font-size:clamp(1.05rem,2.6vw,1.3rem);max-width:640px;margin:0 auto 30px;opacity:.98}
+  .hero .meta{font-size:.95rem;opacity:.92;margin-top:26px}
+
+  /* SECTIONS */
+  section{padding:60px 0}
+  section h2{font-size:clamp(1.6rem,5vw,2.2rem);margin-bottom:8px;text-align:center}
+  section .sub{text-align:center;color:var(--muted);max-width:600px;margin:0 auto 40px}
+
+  .grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px;transition:background .3s,border-color .3s}
+  .card h3{font-size:1.15rem;margin-bottom:8px;color:var(--accent-dark)}
+  .card p{color:var(--muted);font-size:.97rem}
+
+  .alt{background:var(--alt-bg);border-top:1px solid var(--line);border-bottom:1px solid var(--line);transition:background .3s}
+
+  /* concept list */
+  .why{max-width:720px;margin:0 auto}
+  .why li{list-style:none;padding:14px 0 14px 40px;position:relative;border-bottom:1px solid var(--line);color:var(--muted)}
+  .why li:before{content:"✕";position:absolute;left:6px;top:14px;color:var(--accent);font-weight:700}
+  .why li b{color:var(--ink)}
+
+  /* steps */
+  .steps{max-width:640px;margin:0 auto;display:grid;gap:16px}
+  .step{display:flex;gap:16px;align-items:flex-start}
+  .step .num{flex:none;width:38px;height:38px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+  .step h3{font-size:1.05rem;margin-bottom:2px}
+  .step p{color:var(--muted);font-size:.95rem}
+
+  /* infos pratiques */
+  .facts{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));max-width:760px;margin:0 auto}
+  .fact{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;text-align:center;transition:background .3s,border-color .3s}
+  .fact .big{font-size:1.3rem;font-weight:700;color:var(--accent-dark)}
+  .fact .lbl{font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-top:4px}
+
+  /* inscription */
+  #inscription{background:var(--insc-bg);text-align:center;transition:background .3s}
+  .form-box{max-width:620px;margin:24px auto 0;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px;text-align:left}
+  .insc-form label{display:block;font-weight:600;font-size:.9rem;margin:14px 0 5px}
+  .insc-form input[type=text],.insc-form input[type=email],.insc-form input[type=tel],.insc-form input[type=number]{
+    width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);font:inherit}
+  .insc-form input:focus{outline:2px solid var(--accent);border-color:var(--accent)}
+  .insc-form .choices{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+  .insc-form .choices label{display:inline-flex;align-items:center;gap:6px;margin:0;font-weight:500;
+    border:1px solid var(--line);border-radius:20px;padding:8px 14px;cursor:pointer;background:#fff}
+  .insc-form .choices input{accent-color:var(--accent)}
+  .insc-form .consent-row{display:flex;gap:9px;align-items:flex-start;margin-top:18px;font-size:.85rem;color:var(--muted);font-weight:400}
+  .insc-form .consent-row input{margin-top:3px;accent-color:var(--accent)}
+  .insc-form .hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+  .insc-form button{margin-top:20px;width:100%}
+  #inscMsg{margin-top:16px;font-weight:600;text-align:center}
+  #inscMsg.ok{color:#1c7a3f}#inscMsg.err{color:#c0392b}
+  .consent{font-size:.82rem;color:var(--muted);max-width:640px;margin:22px auto 0}
+
+  footer{background:var(--ink);color:#eef3f8;text-align:center;padding:40px 22px;font-size:.9rem;transition:background .3s}
+  footer a{color:#fff}
+
+  /* Fondu doux lors du changement automatique de couleur */
+  body, header.hero, .alt, #inscription, .card, .fact{transition-duration:1.2s}
+
+  /* ===== MOBILE ===== */
+  @media (max-width:600px){
+    body{font-size:16px}
+    .wrap{padding:0 18px}
+    header.hero{padding:60px 18px 66px}
+    section{padding:46px 0}
+    .grid{grid-template-columns:1fr}
+    .facts{grid-template-columns:1fr 1fr}
+    .why li{padding-left:34px}
+    .topbar{letter-spacing:.18em;font-size:.66rem}
+  }
+</style>
+</head>
+<body data-theme="aqua">
+
+<!-- Bandeau fin (contraste avec le fond) -->
+<div class="topbar"><span>Soirée Match · Rencontres célibataires · Lausanne</span></div>
+
+<header class="hero">
+  <div class="wrap">
+    <h1>Soirée Match</h1>
+    <p class="lead">De vraies rencontres, en vrai. Pas de swipe, pas de messages qui n'aboutissent jamais. Une soirée pensée et animée par un thérapeute pour que les gens se rencontrent&nbsp;vraiment.</p>
+    <a href="#inscription" class="btn">Je m'inscris</a>
+    <p class="meta">Prochaine soirée · 30–40 ans · Hétéro · Lausanne</p>
+  </div>
+</header>
+
+<!-- POURQUOI -->
+<section>
+  <div class="wrap">
+    <h2>Marre des applis&nbsp;?</h2>
+    <p class="sub">Tinder, Bumble, Hinge… toujours les mêmes déceptions. On a fait l'inverse.</p>
+    <ul class="why">
+      <li><b>La lenteur.</b> Des semaines de messages avant, parfois, un premier verre.</li>
+      <li><b>Les banalités.</b> « Ça va&nbsp;? » « Et toi&nbsp;? » … puis plus rien.</li>
+      <li><b>Les photos trompeuses.</b> On ne sait jamais vraiment qui on va rencontrer.</li>
+      <li><b>La peur du rejet.</b> Derrière un écran, tout le monde reste sur ses gardes.</li>
+      <li><b>On ne fait plus vraiment d'effort&nbsp;:</b> on jette l'autre sans lui donner sa chance.</li>
+      <li><b>L'épuisement.</b> Recommencer encore et encore, jusqu'à la lassitude.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- CONCEPT -->
+<section class="alt">
+  <div class="wrap">
+    <h2>Ce qu'on fait à la place</h2>
+    <p class="sub">Une soirée où l'on se rencontre naturellement, par le jeu, le rire et le mouvement — sans questionnaires ni pression.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>Animée par un thérapeute</h3>
+        <p>Qui a l'habitude de travailler sur les histoires amoureuses. Qui sait créer les conditions pour que les gens se découvrent — et se plaisent.</p>
+      </div>
+      <div class="card">
+        <h3>Des jeux brise-glace</h3>
+        <p>Des jeux pour se connaître, briser la glace, vaincre sa timidité et découvrir vraiment l'autre — fondés sur les découvertes récentes de la psychologie.</p>
+      </div>
+      <div class="card">
+        <h3>Musique &amp; danse</h3>
+        <p>De la musique tout au long de la soirée et des moments dansants pour détendre l'atmosphère.</p>
+      </div>
+      <div class="card">
+        <h3>Cadre convivial</h3>
+        <p>Dans un lieu chaleureux de Lausanne, salle privatisée pour le groupe. On boit un verre, on rit, on se rencontre.</p>
+      </div>
+      <div class="card">
+        <h3>Groupe équilibré</h3>
+        <p>Nombre de places limité et équilibré entre femmes et hommes, pour que chacun ait de vraies occasions de rencontre.</p>
+      </div>
+      <div class="card">
+        <h3>Bienveillance d'abord</h3>
+        <p>Un cadre respectueux et sans jugement. On vient pour passer un bon moment, sans se mettre la pression.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- COMMENT CA MARCHE -->
+<section>
+  <div class="wrap">
+    <h2>Comment ça se passe</h2>
+    <p class="sub">Simple, du début à la fin.</p>
+    <div class="steps">
+      <div class="step"><div class="num">1</div><div><h3>Je m'inscris en ligne</h3><p>Quelques infos, paiement de l'entrée, et c'est réservé.</p></div></div>
+      <div class="step"><div class="num">2</div><div><h3>Je reçois ma confirmation</h3><p>Un email de confirmation tout de suite, puis un rappel par SMS deux jours avant.</p></div></div>
+      <div class="step"><div class="num">3</div><div><h3>Je viens à la soirée</h3><p>De 20h à 23h : jeux, musique, rencontres. Il ne reste plus qu'à se laisser porter.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- INFOS PRATIQUES -->
+<section class="alt">
+  <div class="wrap">
+    <h2>Infos pratiques</h2>
+    <p class="sub">Pour la première soirée.</p>
+    <div class="facts">
+      <div class="fact"><div class="big">30–40 ans</div><div class="lbl">Tranche d'âge</div></div>
+      <div class="fact"><div class="big">20h–23h</div><div class="lbl">Horaire</div></div>
+      <div class="fact"><div class="big">20 CHF</div><div class="lbl">Entrée (hors consos)</div></div>
+      <div class="fact"><div class="big">Lausanne</div><div class="lbl">Lieu communiqué à l'inscription</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- INSCRIPTION -->
+<section id="inscription">
+  <div class="wrap">
+    <h2>Je réserve ma place</h2>
+    <p class="sub">Les places sont limitées et équilibrées femmes/hommes. Ne tardez pas.</p>
+
+    <div class="form-box">
+      <form class="insc-form" id="inscForm" autocomplete="on">
+        <label for="f-prenom">Prénom</label>
+        <input type="text" id="f-prenom" name="prenom" required>
+
+        <label for="f-nom">Nom</label>
+        <input type="text" id="f-nom" name="nom" required>
+
+        <label for="f-email">E-mail</label>
+        <input type="email" id="f-email" name="email" required>
+
+        <label for="f-tel">Téléphone mobile</label>
+        <input type="tel" id="f-tel" name="tel" required>
+
+        <label for="f-annee">Année de naissance</label>
+        <input type="number" id="f-annee" name="annee" min="1930" max="2010" placeholder="ex. 1990" required>
+
+        <label>Je suis</label>
+        <div class="choices">
+          <label><input type="radio" name="genre" value="Femme" required> Femme</label>
+          <label><input type="radio" name="genre" value="Homme"> Homme</label>
+          <label><input type="radio" name="genre" value="Non binaire"> Non binaire</label>
+        </div>
+
+        <label>Je m'intéresse à</label>
+        <div class="choices">
+          <label><input type="radio" name="recherche" value="Des hommes" required> Des hommes</label>
+          <label><input type="radio" name="recherche" value="Des femmes"> Des femmes</label>
+          <label><input type="radio" name="recherche" value="Les deux"> Les deux</label>
+        </div>
+
+        <!-- anti-bot : ne pas remplir -->
+        <div class="hp" aria-hidden="true"><label>Ne pas remplir<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
+
+        <label class="consent-row">
+          <input type="checkbox" name="consent" required>
+          <span>J'accepte que mes données (prénom, nom, e-mail, téléphone, année de naissance) soient conservées par l'organisateur pour gérer mon inscription et m'informer des prochaines soirées.</span>
+        </label>
+
+        <button type="submit" class="btn">Réserver ma place</button>
+      </form>
+      <p id="inscMsg"></p>
+    </div>
+
+    <p class="consent">
+      En vous inscrivant, vous acceptez que vos données (prénom, nom, e-mail, téléphone, année de naissance)
+      soient conservées par l'organisateur pour gérer votre inscription et vous informer des prochaines soirées.
+      Vos données ne sont jamais transmises à des tiers. Vous pouvez demander leur suppression à tout moment
+      en écrivant à <a href="mailto:contact@soireematch.com">contact@soireematch.com</a>.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p><strong>Soirée Match</strong> — Rencontres pour célibataires · Lausanne</p>
+    <p style="margin-top:8px">Une question&nbsp;? <a href="mailto:contact@soireematch.com">contact@soireematch.com</a></p>
+  </div>
+</footer>
+
+<script>
+  // Motif mudéjar « cœur » (entrelacs + cœur stylisé), appliqué en filigrane.
+  const heartSvg = "<svg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'><g fill='none' stroke='#000' stroke-width='1.5' stroke-linejoin='round'><polygon points='30,0 60,30 30,60 0,30'/><polygon points='8.8,8.8 51.2,8.8 51.2,51.2 8.8,51.2'/><path d='M0,0 L6,6 M60,0 L54,6 M60,60 L54,54 M0,60 L6,54'/><path d='M30,40 C22.5,32.5 22,31.5 22,27 A4.6,4.6 0 0 1 30,25 A4.6,4.6 0 0 1 38,27 C38,31.5 37.5,32.5 30,40 Z'/></g></svg>";
+
+  document.body.style.setProperty('--pat', 'url("data:image/svg+xml,' + encodeURIComponent(heartSvg) + '")');
+  document.body.style.setProperty('--patsize', '34px');
+
+  // La couleur de fond change automatiquement toutes les 15 secondes (fondu doux).
+  const palettes = ['rose', 'aqua', 'brume', 'terracotta'];
+  let i = Math.floor(Math.random() * palettes.length);
+  document.body.setAttribute('data-theme', palettes[i]);
+  setInterval(function(){
+    i = (i + 1) % palettes.length;
+    document.body.setAttribute('data-theme', palettes[i]);
+  }, 15000);
+
+  // --- Envoi du formulaire d'inscription vers le serveur ---
+  const form = document.getElementById('inscForm');
+  const msg = document.getElementById('inscMsg');
+  form.addEventListener('submit', async function(e){
+    e.preventDefault();
+    msg.className = ''; msg.textContent = '';
+    const btn = form.querySelector('button[type=submit]');
+    btn.disabled = true; const label = btn.textContent; btn.textContent = 'Envoi…';
+    try {
+      const data = Object.fromEntries(new FormData(form).entries());
+      data.consent = form.querySelector('[name=consent]').checked ? '1' : '';
+      const r = await fetch('/api/inscription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.ok) {
+        form.style.display = 'none';
+        msg.className = 'ok';
+        msg.textContent = '🎉 Merci ! Ton inscription est bien enregistrée. Tu recevras les détails par e-mail.';
+      } else {
+        msg.className = 'err';
+        msg.textContent = j.error || 'Une erreur est survenue. Réessaie dans un instant.';
+        btn.disabled = false; btn.textContent = label;
+      }
+    } catch (err) {
+      msg.className = 'err';
+      msg.textContent = 'Connexion au serveur impossible. Réessaie dans un instant.';
+      btn.disabled = false; btn.textContent = label;
+    }
+  });
+</script>
+
+</body>
+</html>
