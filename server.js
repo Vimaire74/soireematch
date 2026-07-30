@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const nodemailer = require('nodemailer');
 
 // ---------- Configuration ----------
 const ROOT = __dirname;
@@ -35,6 +36,67 @@ db.exec(`CREATE TABLE IF NOT EXISTS inscriptions(
   genre TEXT, recherche TEXT, consent INTEGER,
   ip TEXT, ua TEXT
 )`);
+
+// ---------- E-mail (OVH Zimbra SMTP) ----------
+const MAIL_USER = process.env.MAIL_USER || '';
+const MAIL_PASS = process.env.MAIL_PASS || '';
+const MAIL_FROM = process.env.MAIL_FROM || (MAIL_USER ? `Soirée Match <${MAIL_USER}>` : '');
+const NOTIFY_TO = process.env.NOTIFY_TO || '';   // ton adresse, pour être prévenu de chaque inscription (optionnel)
+let transporter = null;
+if (MAIL_USER && MAIL_PASS) {
+  transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST || 'ssl0.ovh.net',
+    port: Number(process.env.SMTP_PORT || 465),
+    secure: (process.env.SMTP_SECURE || 'true') !== 'false',   // 465 = SSL ; mettre SMTP_SECURE=false + SMTP_PORT=587 pour STARTTLS
+    auth: { user: MAIL_USER, pass: MAIL_PASS },
+  });
+  console.log('✉  Envoi d\'e-mails activé (' + MAIL_USER + ')');
+} else {
+  console.warn('✉  Envoi d\'e-mails désactivé (MAIL_USER / MAIL_PASS non définis) — les inscriptions sont quand même enregistrées.');
+}
+
+function sendConfirmation(i) {
+  if (!transporter) return;
+  const prenom = (i.prenom || '').trim() || 'à toi';
+  transporter.sendMail({
+    from: MAIL_FROM,
+    to: i.email,
+    subject: 'Ton inscription à la Soirée Match est confirmée 🎉',
+    text:
+`Bonjour ${prenom},
+
+Merci ! Ton inscription à la Soirée Match est bien enregistrée.
+
+On te recontacte très vite avec la date, le lieu exact à Lausanne et les détails pour régler ton entrée (20 CHF). En attendant, prépare-toi à faire de vraies rencontres — sans applis, sans swipe.
+
+À très vite,
+L'équipe Soirée Match
+
+Une question ? Réponds simplement à cet e-mail.`,
+    html:
+`<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:520px;margin:auto;color:#1e2f30">
+  <div style="background:linear-gradient(135deg,#2f7d8a,#6fc0c0);color:#fff;padding:28px 24px;border-radius:14px 14px 0 0">
+    <h1 style="margin:0;font-size:1.5rem">Soirée Match</h1>
+    <p style="margin:6px 0 0;opacity:.95">Ton inscription est confirmée 🎉</p>
+  </div>
+  <div style="border:1px solid #d3e5e2;border-top:0;border-radius:0 0 14px 14px;padding:24px">
+    <p>Bonjour ${prenom},</p>
+    <p>Merci&nbsp;! Ton inscription à la <b>Soirée Match</b> est bien enregistrée.</p>
+    <p>On te recontacte très vite avec la <b>date</b>, le <b>lieu exact à Lausanne</b> et les détails pour régler ton entrée (20&nbsp;CHF). En attendant, prépare-toi à faire de vraies rencontres — sans applis, sans swipe.</p>
+    <p style="margin-top:22px">À très vite,<br><b>L'équipe Soirée Match</b></p>
+    <p style="color:#6f7f7e;font-size:.85rem;margin-top:22px">Une question&nbsp;? Réponds simplement à cet e-mail.</p>
+  </div>
+</div>`,
+  }).catch((e) => console.error('Envoi e-mail confirmation échoué:', e.message));
+
+  if (NOTIFY_TO) {
+    transporter.sendMail({
+      from: MAIL_FROM, to: NOTIFY_TO,
+      subject: `Nouvelle inscription : ${i.prenom} ${i.nom}`,
+      text: `${i.prenom} ${i.nom}\n${i.email} — ${i.tel}\nNé(e) en ${i.annee} · ${i.genre} · cherche : ${i.recherche}`,
+    }).catch((e) => console.error('Notif organisateur échouée:', e.message));
+  }
+}
 
 // ---------- Utilitaires ----------
 const esc = (s) => String(s == null ? '' : s)
@@ -260,6 +322,7 @@ const server = http.createServer(async (req, res) => {
     }
     db.prepare(`INSERT INTO inscriptions(created_at,prenom,nom,email,tel,annee,genre,recherche,consent,ip,ua)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(new Date().toISOString(), prenom, nom, email, tel, annee, genre, recherche, consent, ip, (req.headers['user-agent'] || '').slice(0, 300));
+    sendConfirmation({ prenom, nom, email, tel, annee, genre, recherche });   // envoi non bloquant
     return json(res, 200, { ok: true });
   }
 
