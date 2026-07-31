@@ -175,14 +175,54 @@ function rateLimited(ip) {
   return arr.length > 6; // > 6 inscriptions / minute / IP
 }
 
+// ---------- Désinscription + campagnes e-mail ----------
+try { db.exec('ALTER TABLE inscriptions ADD COLUMN unsubscribed INTEGER DEFAULT 0'); } catch { /* colonne déjà présente */ }
+
+const SITE_URL = (process.env.SITE_URL || cfg.siteUrl || 'https://soireematch.com').replace(/\/+$/, '');
+const unsubToken = (email) => crypto.createHmac('sha256', SECRET).update('unsub:' + String(email).toLowerCase()).digest('base64url');
+const unsubLink = (email) => `${SITE_URL}/unsub?e=${encodeURIComponent(email)}&t=${unsubToken(email)}`;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let lastCampaign = null; // { at, total, sent, failed, running, subject }
+
+async function runCampaign(recipients, subject, body) {
+  lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
+  for (const r of recipients) {
+    const prenom = (r.prenom || '').trim() || 'à toi';
+    const link = unsubLink(r.email);
+    const subj = subject.replace(/\{prenom\}/gi, prenom);
+    const txt = body.replace(/\{prenom\}/gi, prenom) + `\n\n—\nPour ne plus recevoir ces e-mails : ${link}`;
+    const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:540px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55">`
+      + esc(body).replace(/\{prenom\}/gi, esc(prenom)).replace(/\n/g, '<br>')
+      + `<hr style="border:none;border-top:1px solid #e0e0e0;margin:22px 0">`
+      + `<p style="font-size:12px;color:#8a9a99">Tu reçois cet e-mail car tu t'es inscrit(e) à la Soirée Match. <a href="${link}" style="color:#8a9a99">Se désinscrire</a>.</p></div>`;
+    try {
+      await transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: subj, text: txt, html });
+      lastCampaign.sent++;
+    } catch (e) { lastCampaign.failed++; console.error('Campagne — échec', r.email, e.message); }
+    await sleep(300);
+  }
+  lastCampaign.running = false;
+  console.log(`Campagne « ${subject} » : ${lastCampaign.sent}/${lastCampaign.total} envoyés, ${lastCampaign.failed} échecs.`);
+}
+
+// Destinataires (exclut les désinscrits) selon genre / recherche / "tous"
+function recipientsFor({ genre, recherche }) {
+  let sql = 'SELECT prenom, email FROM inscriptions WHERE COALESCE(unsubscribed,0)=0', args = [];
+  if (genre) { sql += ' AND genre=?'; args.push(genre); }
+  if (recherche) { sql += ' AND recherche=?'; args.push(recherche); }
+  return db.prepare(sql).all(...args);
+}
+
 // ---------- Statistiques ----------
 function stats() {
   const total = db.prepare('SELECT COUNT(*) n FROM inscriptions').get().n;
   const weekAgo = new Date(Date.now() - 7 * 864e5).toISOString();
   const semaine = db.prepare('SELECT COUNT(*) n FROM inscriptions WHERE created_at >= ?').get(weekAgo).n;
+  const desinscrits = db.prepare('SELECT COUNT(*) n FROM inscriptions WHERE COALESCE(unsubscribed,0)=1').get().n;
   const byGenre = db.prepare('SELECT genre, COUNT(*) n FROM inscriptions GROUP BY genre').all();
   const byRech = db.prepare('SELECT recherche, COUNT(*) n FROM inscriptions GROUP BY recherche').all();
-  return { total, semaine, byGenre, byRech };
+  return { total, semaine, desinscrits, byGenre, byRech };
 }
 
 // ---------- Static ----------
@@ -220,6 +260,11 @@ const CSS = `
   th{background:#f2f8f7;font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
   .bar{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}
   .empty{padding:40px;text-align:center;color:var(--muted)}
+  label{display:block;margin:14px 0 5px;font-weight:600;font-size:.9rem}
+  textarea{font:inherit;width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
+  a.back{display:inline-block;margin-bottom:8px;color:var(--accent);text-decoration:none}
+  .panel{background:#fff;border:1px solid var(--line);border-radius:12px;padding:22px;max-width:620px}
+  .hint{font-size:.82rem;color:var(--muted)}
   @media(max-width:640px){td,th{padding:7px 6px;font-size:.8rem}}
 `;
 
@@ -250,14 +295,16 @@ function adminPage(query) {
   const s = stats();
   const opt = (v, cur) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`;
   const genreCards = s.byGenre.map((g) => `<div class=card><div class=n>${g.n}</div><div class=l>${esc(g.genre || '—')}</div></div>`).join('');
+  const camp = lastCampaign ? `<div style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:.9rem">✉ Dernier envoi « ${esc(lastCampaign.subject)} » — ${lastCampaign.sent}/${lastCampaign.total} envoyés${lastCampaign.failed ? `, ${lastCampaign.failed} échec(s)` : ''}${lastCampaign.running ? ' <b>(en cours…)</b>' : ''}.</div>` : '';
 
   const trs = rows.map((r) => `<tr>
     <td><input type=checkbox name=ids value=${r.id} form=act></td>
     <td>${esc(r.created_at.slice(0, 10))}</td>
     <td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td>
-    <td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td>
+    <td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a>${r.unsubscribed ? ' <span title="Désinscrit" style="color:#c0392b">🚫</span>' : ''}</td>
     <td>${esc(r.tel)}</td><td>${esc(r.annee)}</td>
     <td>${esc(r.genre)}</td><td>${esc(r.recherche)}</td>
+    <td><a href="/admin/edit?id=${r.id}">Éditer</a></td>
   </tr>`).join('');
 
   return `<!doctype html><html lang=fr><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
@@ -268,7 +315,9 @@ function adminPage(query) {
       <div class=card><div class=n>${s.total}</div><div class=l>Total</div></div>
       <div class=card><div class=n>${s.semaine}</div><div class=l>Cette semaine</div></div>
       ${genreCards}
+      <div class=card><div class=n>${s.desinscrits}</div><div class=l>Désinscrits</div></div>
     </div>
+    ${camp}
 
     <form class=filters method=get action=/admin>
       <input name=q value="${esc(q)}" placeholder="Rechercher nom / e-mail…">
@@ -280,6 +329,7 @@ function adminPage(query) {
 
     <form id=act method=post></form>
     <div class=bar>
+      <a href="/admin/compose"><button type=button>✉ Écrire aux inscrits</button></a>
       <button form=act formaction=/admin/export>⬇ Exporter la sélection (CSV)</button>
       <a href="/admin/export?all=1${q || fg || fr ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
       <button form=act formaction=/admin/delete class=danger onclick="return confirm('Supprimer les inscriptions sélectionnées ?')">🗑 Supprimer la sélection</button>
@@ -287,7 +337,7 @@ function adminPage(query) {
 
     ${rows.length ? `<table>
       <tr><th><input type=checkbox onclick="document.querySelectorAll('input[name=ids]').forEach(c=>c.checked=this.checked)"></th>
-      <th>Date</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Tél</th><th>Année</th><th>Genre</th><th>Recherche</th></tr>
+      <th>Date</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Tél</th><th>Année</th><th>Genre</th><th>Recherche</th><th>Actions</th></tr>
       ${trs}
     </table>` : `<div class=empty>Aucune inscription pour l'instant.</div>`}
   </div></html>`;
@@ -299,6 +349,66 @@ function toCSV(rows) {
   const lines = [cols.join(',')];
   rows.forEach((r) => lines.push(cols.map((c) => q(r[c])).join(',')));
   return '﻿' + lines.join('\r\n'); // BOM pour Excel
+}
+
+const pageHead = (title) => `<!doctype html><html lang=fr><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>${title}</title><style>${CSS}</style><header><b>Soirée Match — Admin</b><a href=/admin/logout>Déconnexion</a></header>`;
+
+function composePage() {
+  const s = stats();
+  const byG = Object.fromEntries(s.byGenre.map((g) => [g.genre, g.n]));
+  const byR = Object.fromEntries(s.byRech.map((r) => [r.recherche, r.n]));
+  const opt = (v) => `<option>${esc(v)}</option>`;
+  const off = !transporter;
+  return `${pageHead('Écrire aux inscrits')}
+  <div class=wrap>
+    <a class=back href="/admin">← Retour aux inscriptions</a>
+    <h2>Écrire aux inscrits</h2>
+    ${off ? '<div class=panel style="border-color:#e0b4b0;color:#c0392b">⚠ L\'envoi d\'e-mails est désactivé (MAIL_USER / MAIL_PASS non définis dans Coolify).</div>' : ''}
+    <form class=panel method=post action=/admin/send onsubmit="return confirm('Envoyer cet e-mail au segment choisi ?')">
+      <label>À qui ?</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <span>Genre <select name=genre><option value="">Tous</option>${['Femme', 'Homme', 'Non binaire'].map(opt).join('')}</select></span>
+        <span>Intéressé(e) par <select name=recherche><option value="">Peu importe</option>${['Des hommes', 'Des femmes', 'Les deux'].map(opt).join('')}</select></span>
+      </div>
+      <p class=hint>Laisse « Tous » + « Peu importe » pour écrire à <b>tout le monde</b>. Repères : Femmes ${byG['Femme'] || 0} · Hommes ${byG['Homme'] || 0} · Non binaire ${byG['Non binaire'] || 0} — cherche : hommes ${byR['Des hommes'] || 0}, femmes ${byR['Des femmes'] || 0}, les deux ${byR['Les deux'] || 0}. (Les désinscrits sont exclus automatiquement.)</p>
+      <label>Objet</label>
+      <input name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
+      <label>Message</label>
+      <textarea name=body rows=10 required placeholder="Bonjour {prenom},&#10;&#10;…"></textarea>
+      <p class=hint>Écris <b>{prenom}</b> pour insérer le prénom de chacun. Un lien de désinscription est ajouté automatiquement en bas de l'e-mail.</p>
+      <div style="margin-top:14px"><button ${off ? 'disabled' : ''}>Envoyer</button></div>
+    </form>
+  </div></html>`;
+}
+
+function editPage(r) {
+  const opt = (v, cur) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`;
+  return `${pageHead('Éditer une inscription')}
+  <div class=wrap>
+    <a class=back href="/admin">← Retour aux inscriptions</a>
+    <h2>Éditer une inscription</h2>
+    <form class=panel method=post action=/admin/edit>
+      <input type=hidden name=id value=${r.id}>
+      <label>Prénom</label><input name=prenom value="${esc(r.prenom)}" style="width:100%">
+      <label>Nom</label><input name=nom value="${esc(r.nom)}" style="width:100%">
+      <label>E-mail</label><input name=email value="${esc(r.email)}" style="width:100%">
+      <label>Téléphone</label><input name=tel value="${esc(r.tel)}" style="width:100%">
+      <label>Année de naissance</label><input name=annee value="${esc(r.annee)}" style="width:100%">
+      <label>Genre</label><select name=genre>${['Femme', 'Homme', 'Non binaire'].map((v) => opt(v, r.genre)).join('')}</select>
+      <label>Intéressé(e) par</label><select name=recherche>${['Des hommes', 'Des femmes', 'Les deux'].map((v) => opt(v, r.recherche)).join('')}</select>
+      <label style="display:flex;gap:8px;align-items:center"><input type=checkbox name=unsub ${r.unsubscribed ? 'checked' : ''} style="width:auto"> Désinscrit (ne plus lui envoyer d'e-mails)</label>
+      <div style="margin-top:16px"><button>Enregistrer</button> <a href="/admin"><button type=button class=sec>Annuler</button></a></div>
+    </form>
+  </div></html>`;
+}
+
+function unsubPage(ok) {
+  return `${pageHead('Désinscription')}
+  <div class=wrap><div class=panel>
+    ${ok
+      ? '<h2>C\'est fait ✓</h2><p>Tu ne recevras plus d\'e-mails de la Soirée Match. Si c\'était une erreur, écris-nous à contact@soireematch.com.</p>'
+      : '<h2>Lien invalide</h2><p>Ce lien de désinscription n\'est pas valide. Écris-nous à contact@soireematch.com et on s\'en occupe.</p>'}
+  </div></div></html>`;
 }
 
 // ---------- Serveur ----------
@@ -330,6 +440,16 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/stats' && req.method === 'GET') {
     if (!REPORT_TOKEN || url.searchParams.get('token') !== REPORT_TOKEN) return json(res, 401, { ok: false });
     return json(res, 200, stats());
+  }
+
+  // Désinscription (lien public dans les e-mails)
+  if (p === '/unsub' && req.method === 'GET') {
+    const email = url.searchParams.get('e') || '';
+    const t = url.searchParams.get('t') || '';
+    const good = email ? unsubToken(email) : '';
+    const valid = !!good && t.length === good.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(good));
+    if (valid) db.prepare('UPDATE inscriptions SET unsubscribed=1 WHERE lower(email)=lower(?)').run(email);
+    return send(res, 200, unsubPage(valid));
   }
 
   // Admin — login
@@ -383,6 +503,35 @@ const server = http.createServer(async (req, res) => {
       if (ids.length) db.prepare(`DELETE FROM inscriptions WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
       return send(res, 302, '', { Location: '/admin' });
     }
+
+    // Composer / envoyer un e-mail groupé
+    if (p === '/admin/compose' && req.method === 'GET') return send(res, 200, composePage());
+    if (p === '/admin/send' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      const subject = (d.subject || '').trim(), body = (d.body || '').trim();
+      const genre = (d.genre || '').trim(), recherche = (d.recherche || '').trim();
+      if (!transporter || !subject || !body) return send(res, 302, '', { Location: '/admin/compose' });
+      const recips = recipientsFor({ genre, recherche });
+      runCampaign(recips, subject, body);   // en arrière-plan (non bloquant)
+      return send(res, 302, '', { Location: '/admin' });
+    }
+
+    // Éditer une fiche
+    if (p === '/admin/edit' && req.method === 'GET') {
+      const id = Number(url.searchParams.get('id'));
+      const r = id && db.prepare('SELECT * FROM inscriptions WHERE id=?').get(id);
+      if (!r) return send(res, 302, '', { Location: '/admin' });
+      return send(res, 200, editPage(r));
+    }
+    if (p === '/admin/edit' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      const id = Number(d.id);
+      if (id) db.prepare('UPDATE inscriptions SET prenom=?,nom=?,email=?,tel=?,annee=?,genre=?,recherche=?,unsubscribed=? WHERE id=?')
+        .run((d.prenom || '').trim(), (d.nom || '').trim(), (d.email || '').trim(), (d.tel || '').trim(),
+             parseInt(d.annee, 10) || null, (d.genre || '').trim(), (d.recherche || '').trim(), d.unsub ? 1 : 0, id);
+      return send(res, 302, '', { Location: '/admin' });
+    }
+
     return send(res, 404, 'Introuvable');
   }
 
