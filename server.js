@@ -182,20 +182,52 @@ const SITE_URL = (process.env.SITE_URL || cfg.siteUrl || 'https://soireematch.co
 const unsubToken = (email) => crypto.createHmac('sha256', SECRET).update('unsub:' + String(email).toLowerCase()).digest('base64url');
 const unsubLink = (email) => `${SITE_URL}/unsub?e=${encodeURIComponent(email)}&t=${unsubToken(email)}`;
 
+// ---------- Soirées + réservations ----------
+db.exec(`CREATE TABLE IF NOT EXISTS soirees(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL,
+  date_texte TEXT, lieu TEXT, prix TEXT, actif INTEGER DEFAULT 1, created_at TEXT)`);
+db.exec(`CREATE TABLE IF NOT EXISTS reservations(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, soiree_id INTEGER,
+  prenom TEXT, nom TEXT, email TEXT, tel TEXT, annee INTEGER, genre TEXT, recherche TEXT,
+  created_at TEXT, paid INTEGER DEFAULT 0)`);
+const getSoiree = (code) => db.prepare('SELECT * FROM soirees WHERE code=?').get(code);
+const getSoireeById = (id) => db.prepare('SELECT * FROM soirees WHERE id=?').get(id);
+const soireeLink = (code) => `${SITE_URL}/soiree/${encodeURIComponent(code)}`;
+
+function sendReservationMail(so, i) {
+  if (!transporter) return;
+  const prenom = (i.prenom || '').trim() || 'à toi';
+  const quand = so.date_texte ? ` du ${so.date_texte}` : '';
+  transporter.sendMail({
+    from: MAIL_FROM, to: i.email,
+    subject: `Ta réservation Soirée Match${so.date_texte ? ` — ${so.date_texte}` : ''} est confirmée 🎉`,
+    text: `Bonjour ${prenom},\n\nTa place pour la Soirée Match${quand} est bien réservée !\n${so.lieu ? `\nLieu : ${so.lieu}` : ''}${so.prix ? `\nEntrée : ${so.prix}` : ''}\n\nUn petit mot qui compte : la salle nous est offerte par le bar, alors pense à consommer un verre ou deux pour les remercier.\n\nOn a hâte de te voir. À très vite !\nTa team Soirée Match 💛`,
+  }).catch((e) => console.error('Mail réservation échoué:', e.message));
+  if (NOTIFY_TO) transporter.sendMail({ from: MAIL_FROM, to: NOTIFY_TO, subject: `Réservation « ${so.code} » : ${i.prenom || ''} ${i.nom || ''}`, text: `Nouvelle réservation pour ${so.code} (${so.date_texte || ''})\n${i.prenom || ''} ${i.nom || ''} — ${i.email || ''}` }).catch(() => {});
+}
+function resaCSV(rows) {
+  const cols = ['id', 'created_at', 'prenom', 'nom', 'email', 'tel', 'annee', 'genre', 'recherche'];
+  const q = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  return '﻿' + [cols.join(','), ...rows.map((r) => cols.map((c) => q(r[c])).join(','))].join('\r\n');
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let lastCampaign = null; // { at, total, sent, failed, running, subject }
 
-async function runCampaign(recipients, subject, body) {
+async function runCampaign(recipients, subject, body, linkUrl = SITE_URL) {
   lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
   for (const r of recipients) {
     const prenom = (r.prenom || '').trim() || 'à toi';
-    const link = unsubLink(r.email);
-    const subj = subject.replace(/\{prenom\}/gi, prenom);
-    const txt = body.replace(/\{prenom\}/gi, prenom) + `\n\n—\nPour ne plus recevoir ces e-mails : ${link}`;
+    const unsub = unsubLink(r.email);
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl);
+    const subj = rep(subject);
+    const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
+    const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
+      .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`).replace(/\n/g, '<br>');
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:540px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55">`
-      + esc(body).replace(/\{prenom\}/gi, esc(prenom)).replace(/\n/g, '<br>')
+      + htmlBody
       + `<hr style="border:none;border-top:1px solid #e0e0e0;margin:22px 0">`
-      + `<p style="font-size:12px;color:#8a9a99">Tu reçois cet e-mail car tu t'es inscrit(e) à la Soirée Match. <a href="${link}" style="color:#8a9a99">Se désinscrire</a>.</p></div>`;
+      + `<p style="font-size:12px;color:#8a9a99">Tu reçois cet e-mail car tu t'es inscrit(e) à la Soirée Match. <a href="${unsub}" style="color:#8a9a99">Se désinscrire</a>.</p></div>`;
     try {
       await transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: subj, text: txt, html });
       lastCampaign.sent++;
@@ -309,7 +341,7 @@ function adminPage(query) {
 
   return `<!doctype html><html lang=fr><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
   <title>Inscriptions — Soirée Match</title><style>${CSS}</style>
-  <header><b>Soirée Match — Inscriptions</b><a href=/admin/logout>Déconnexion</a></header>
+  <header><b>Soirée Match — Inscriptions</b><span><a href=/admin/soirees>Soirées</a> &nbsp;·&nbsp; <a href=/admin/logout>Déconnexion</a></span></header>
   <div class=wrap>
     <div class=cards>
       <div class=card><div class=n>${s.total}</div><div class=l>Total</div></div>
@@ -351,7 +383,191 @@ function toCSV(rows) {
   return '﻿' + lines.join('\r\n'); // BOM pour Excel
 }
 
-const pageHead = (title) => `<!doctype html><html lang=fr><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>${title}</title><style>${CSS}</style><header><b>Soirée Match — Admin</b><a href=/admin/logout>Déconnexion</a></header>`;
+const pageHead = (title) => `<!doctype html><html lang=fr><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>${title}</title><style>${CSS}</style><header><b>Soirée Match — Admin</b><span><a href=/admin>Inscriptions</a> &nbsp;·&nbsp; <a href=/admin/soirees>Soirées</a> &nbsp;·&nbsp; <a href=/admin/logout>Déconnexion</a></span></header>`;
+
+// Pages publiques (réservation, désinscription)
+const PUB_CSS = `body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#ecf4f3;color:#1e2f30;line-height:1.6}
+.box{max-width:540px;margin:6vh auto;background:#fff;border:1px solid #d3e5e2;border-radius:16px;padding:28px}
+.box h1{margin:0 0 4px;font-size:1.5rem}.muted{color:#566b6a}
+label{display:block;font-weight:600;font-size:.9rem;margin:14px 0 5px}
+input,select{width:100%;padding:12px 14px;border:1px solid #d3e5e2;border-radius:10px;font:inherit;background:#fff;color:#1e2f30}
+.btn{display:block;width:100%;margin-top:22px;background:#2f7d8a;color:#fff;border:0;border-radius:40px;padding:15px;font-weight:600;font-size:1.05rem;cursor:pointer}
+.facts{display:flex;gap:20px;flex-wrap:wrap;margin:16px 0;padding:14px 0;border-top:1px solid #eee;border-bottom:1px solid #eee}
+.facts b{display:block;font-size:1.05rem;color:#2f7d8a}.facts span{font-size:.8rem;color:#566b6a}
+.consent{display:flex;gap:9px;align-items:flex-start;font-size:.85rem;color:#566b6a;margin-top:16px}
+.consent input{width:auto}
+a{color:#2f7d8a}`;
+const siteHead = (title) => `<!doctype html><html lang=fr><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>${title}</title><style>${PUB_CSS}</style>`;
+const pubMsg = (title, html) => `${siteHead(title)}<div class=box><h1>${esc(title)}</h1><p>${html}</p></div></html>`;
+
+function soireePage(so, err) {
+  const opt = (v) => `<option>${esc(v)}</option>`;
+  return `${siteHead('Réserver — Soirée Match')}
+  <div class=box>
+    <h1>Soirée Match 💛</h1>
+    <p class=muted>Réserve ta place pour la prochaine soirée</p>
+    <div class=facts>
+      ${so.date_texte ? `<div><b>${esc(so.date_texte)}</b><span>Quand</span></div>` : ''}
+      ${so.lieu ? `<div><b>${esc(so.lieu)}</b><span>Où</span></div>` : ''}
+      ${so.prix ? `<div><b>${esc(so.prix)}</b><span>Entrée</span></div>` : ''}
+    </div>
+    ${err ? `<p style="color:#c0392b">${esc(err)}</p>` : ''}
+    <form method=post action="/soiree/${esc(so.code)}">
+      <label>Prénom</label><input name=prenom required>
+      <label>Nom</label><input name=nom required>
+      <label>E-mail</label><input type=email name=email required>
+      <label>Téléphone mobile</label><input name=tel required>
+      <label>Année de naissance</label><input name=annee type=number min=1930 max=2010 placeholder="ex. 1990" required>
+      <label>Je suis</label><select name=genre required><option value="">—</option>${['Femme', 'Homme', 'Non binaire'].map(opt).join('')}</select>
+      <label>Je m'intéresse à</label><select name=recherche required><option value="">—</option>${['Des hommes', 'Des femmes', 'Les deux'].map(opt).join('')}</select>
+      <div style="position:absolute;left:-9999px" aria-hidden=true><input name=website tabindex=-1 autocomplete=off></div>
+      <label class=consent><input type=checkbox name=consent required> J'accepte que mes données soient conservées pour gérer ma réservation et m'informer des prochaines soirées.</label>
+      <button class=btn>Je réserve ma place</button>
+    </form>
+  </div></html>`;
+}
+function soireeOkPage(so) {
+  return `${siteHead('Réservation confirmée')}<div class=box><h1>C'est réservé ✓</h1><p>Ta place pour la Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''} est bien enregistrée. Tu vas recevoir un e-mail de confirmation. On a hâte de te voir&nbsp;! 💛</p></div></html>`;
+}
+
+function soireesPage() {
+  const list = db.prepare('SELECT s.*, (SELECT COUNT(*) FROM reservations r WHERE r.soiree_id=s.id) resa FROM soirees s ORDER BY s.id DESC').all();
+  const rows = list.map((s) => `<tr>
+    <td><b>${esc(s.code)}</b></td><td>${esc(s.date_texte)}</td><td>${esc(s.lieu)}</td><td>${esc(s.prix)}</td>
+    <td>${s.actif ? '✅' : '—'}</td><td>${s.resa}</td>
+    <td><a href="${soireeLink(s.code)}" target=_blank>Lien</a> · <a href="/admin/soirees/reservations?id=${s.id}">Réservations</a> · <a href="/admin/soirees/edit?id=${s.id}">Éditer</a></td>
+  </tr>`).join('');
+  return `${pageHead('Soirées')}
+  <div class=wrap>
+    <a class=back href="/admin">← Retour aux inscriptions</a>
+    <h2>Soirées</h2>
+    <form class=panel method=post action=/admin/soirees>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <span style="flex:1;min-width:150px"><label>Code (court, sans espace)</label><input name=code required placeholder="ex. aout10" style="width:100%"></span>
+        <span style="flex:2;min-width:200px"><label>Date (texte libre)</label><input name=date_texte placeholder="ex. 10 août à 20h30" style="width:100%"></span>
+      </div>
+      <label>Lieu</label><input name=lieu placeholder="ex. Bar Le Dancing, Bd des Roches 19, 1006 Lausanne" style="width:100%">
+      <label>Prix</label><input name=prix placeholder="ex. 20 CHF" style="width:100%">
+      <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif checked style="width:auto"> Active (réservations ouvertes)</label>
+      <div style="margin-top:14px"><button>Créer la soirée</button></div>
+    </form>
+    ${list.length ? `<table style="margin-top:18px">
+      <tr><th>Code</th><th>Date</th><th>Lieu</th><th>Prix</th><th>Active</th><th>Résa</th><th>Actions</th></tr>${rows}</table>`
+      : `<div class=empty>Aucune soirée. Crée la première ci-dessus, puis mets son <b>{lien}</b> dans un e-mail.</div>`}
+  </div></html>`;
+}
+function soireeEditPage(s) {
+  return `${pageHead('Éditer la soirée')}
+  <div class=wrap>
+    <a class=back href="/admin/soirees">← Retour aux soirées</a>
+    <h2>Éditer la soirée</h2>
+    <form class=panel method=post action=/admin/soirees/edit>
+      <input type=hidden name=id value=${s.id}>
+      <label>Code</label><input name=code value="${esc(s.code)}" required style="width:100%">
+      <label>Date</label><input name=date_texte value="${esc(s.date_texte)}" style="width:100%">
+      <label>Lieu</label><input name=lieu value="${esc(s.lieu)}" style="width:100%">
+      <label>Prix</label><input name=prix value="${esc(s.prix)}" style="width:100%">
+      <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif ${s.actif ? 'checked' : ''} style="width:auto"> Active</label>
+      <div style="margin-top:14px"><button>Enregistrer</button> <a href="/admin/soirees"><button type=button class=sec>Annuler</button></a></div>
+    </form>
+    <form class=panel method=post action=/admin/soirees/delete onsubmit="return confirm('Supprimer cette soirée ET ses réservations ?')" style="margin-top:14px;border-color:#e0b4b0">
+      <input type=hidden name=id value=${s.id}>
+      <button class=danger>🗑 Supprimer la soirée</button>
+      <span class=hint>&nbsp;Supprime aussi ses réservations.</span>
+    </form>
+  </div></html>`;
+}
+function reservationsPage(s) {
+  const list = db.prepare('SELECT * FROM reservations WHERE soiree_id=? ORDER BY id DESC').all(s.id);
+  const g = {}; list.forEach((r) => { g[r.genre] = (g[r.genre] || 0) + 1; });
+  const rows = list.map((r) => `<tr><td>${esc(r.created_at.slice(0, 10))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.tel)}</td><td>${esc(r.annee)}</td><td>${esc(r.genre)}</td><td>${esc(r.recherche)}</td></tr>`).join('');
+  return `${pageHead('Réservations')}
+  <div class=wrap>
+    <a class=back href="/admin/soirees">← Retour aux soirées</a>
+    <h2>Réservations — ${esc(s.date_texte || s.code)}</h2>
+    <div class=cards>
+      <div class=card><div class=n>${list.length}</div><div class=l>Total</div></div>
+      <div class=card><div class=n>${g['Femme'] || 0}</div><div class=l>Femmes</div></div>
+      <div class=card><div class=n>${g['Homme'] || 0}</div><div class=l>Hommes</div></div>
+      <div class=card><div class=n>${g['Non binaire'] || 0}</div><div class=l>Non binaire</div></div>
+    </div>
+    <div class=bar><a href="/admin/soirees/reservations/export?id=${s.id}"><button type=button>⬇ Exporter (CSV)</button></a></div>
+    ${list.length ? `<table><tr><th>Date</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Tél</th><th>Année</th><th>Genre</th><th>Recherche</th></tr>${rows}</table>`
+      : `<div class=empty>Aucune réservation pour l'instant.</div>`}
+  </div></html>`;
+}
+
+// ---------- Modèles d'e-mails ----------
+const PRATIQUE = `📍 Bar Le Dancing, Boulevard des Roches 19, 1006 Lausanne
+🎟️ Entrée : 20 CHF
+
+Un petit mot qui compte : la salle nous est gentiment offerte par le bar. Alors on compte sur toi pour commander un verre ou deux et leur faire honneur — c'est aussi excellent pour le courage 😉. Les consommations sont à ta charge.
+
+Au programme : des jeux intelligents pour se découvrir, se comprendre vraiment et briser la glace, de la musique, quelques fous rires, et surtout de vraies rencontres humaines autour d'un verre — sans applis, sans rejet, sans faux-semblants.
+
+👉 Réserve ta place ici : {lien}`;
+
+const SIGNOFF = `On a hâte de te (re)voir. Belle semaine à toi !
+
+Ta team Soirée Match 💛`;
+
+const TEMPLATES = [
+  {
+    name: 'Général — prochaine soirée (tous)',
+    subject: '💛 La prochaine Soirée Match, c\'est le 10 août — tu viens ?',
+    body: `Bonjour {prenom},
+
+Bonne nouvelle : la date de la prochaine Soirée Match est tombée ! On t'attend le 10 août à 20h30 au bar Le Dancing, à Lausanne.
+
+${PRATIQUE}
+
+${SIGNOFF}`,
+  },
+  {
+    name: 'Hommes → cherchent une femme',
+    subject: '{prenom}, et si c\'était le 10 août ?',
+    body: `Bonjour {prenom},
+
+La prochaine Soirée Match approche, et c'est l'occasion rêvée de faire de belles rencontres en vrai. Des femmes intéressantes et bienveillantes seront présentes le 10 août à 20h30 au bar Le Dancing, à Lausanne — laisse les applis de côté et viens tenter ta chance. Pas besoin d'être un grand séducteur : nos jeux s'occupent de briser la glace pour toi, tu n'as qu'à venir avec le sourire.
+
+${PRATIQUE}
+
+${SIGNOFF}`,
+  },
+  {
+    name: 'Femmes → cherchent un homme',
+    subject: '{prenom}, une soirée pensée pour de vraies rencontres — le 10 août',
+    body: `Bonjour {prenom},
+
+On aimerait beaucoup te voir à la prochaine Soirée Match, le 10 août à 20h30 au bar Le Dancing, à Lausanne. On met un point d'honneur à créer un cadre respectueux et bienveillant, avec des hommes venus pour de vraies rencontres — et une soirée animée par un thérapeute pour que chacune se sente à l'aise. Tu viens comme tu es, on s'occupe du reste.
+
+${PRATIQUE}
+
+${SIGNOFF}`,
+  },
+  {
+    name: 'Rencontres gay — entre hommes',
+    subject: '{prenom}, Soirée Match entre hommes : rendez-vous le 10 août',
+    body: `Bonjour {prenom},
+
+La prochaine Soirée Match dédiée aux rencontres entre hommes arrive : le 10 août à 20h30 au bar Le Dancing, à Lausanne. Une soirée décontractée pour se rencontrer en vrai, rire et créer des liens — loin des applis et de leurs déceptions.
+
+${PRATIQUE}
+
+${SIGNOFF}`,
+  },
+  {
+    name: 'Rencontres gay — entre femmes',
+    subject: '{prenom}, Soirée Match entre femmes : rendez-vous le 10 août',
+    body: `Bonjour {prenom},
+
+La prochaine Soirée Match dédiée aux rencontres entre femmes arrive : le 10 août à 20h30 au bar Le Dancing, à Lausanne. Une soirée chaleureuse et bienveillante pour se rencontrer en vrai, échanger et faire de belles rencontres — sans applis, sans faux-semblants.
+
+${PRATIQUE}
+
+${SIGNOFF}`,
+  },
+];
 
 function composePage() {
   const s = stats();
@@ -359,26 +575,44 @@ function composePage() {
   const byR = Object.fromEntries(s.byRech.map((r) => [r.recherche, r.n]));
   const opt = (v) => `<option>${esc(v)}</option>`;
   const off = !transporter;
+  const soirees = db.prepare('SELECT code,date_texte FROM soirees WHERE actif=1 ORDER BY id DESC').all();
   return `${pageHead('Écrire aux inscrits')}
   <div class=wrap>
     <a class=back href="/admin">← Retour aux inscriptions</a>
     <h2>Écrire aux inscrits</h2>
     ${off ? '<div class=panel style="border-color:#e0b4b0;color:#c0392b">⚠ L\'envoi d\'e-mails est désactivé (MAIL_USER / MAIL_PASS non définis dans Coolify).</div>' : ''}
     <form class=panel method=post action=/admin/send onsubmit="return confirm('Envoyer cet e-mail au segment choisi ?')">
+      <label>Modèle</label>
+      <select id=tpl><option value="-1">— Partir d'un modèle… —</option>${TEMPLATES.map((t, i) => `<option value=${i}>${esc(t.name)}</option>`).join('')}</select>
+      <p class=hint>Choisis un modèle pour pré-remplir l'objet et le message ci-dessous ; tu pourras ensuite l'ajuster (date, lieu…).</p>
+
       <label>À qui ?</label>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <span>Genre <select name=genre><option value="">Tous</option>${['Femme', 'Homme', 'Non binaire'].map(opt).join('')}</select></span>
         <span>Intéressé(e) par <select name=recherche><option value="">Peu importe</option>${['Des hommes', 'Des femmes', 'Les deux'].map(opt).join('')}</select></span>
       </div>
       <p class=hint>Laisse « Tous » + « Peu importe » pour écrire à <b>tout le monde</b>. Repères : Femmes ${byG['Femme'] || 0} · Hommes ${byG['Homme'] || 0} · Non binaire ${byG['Non binaire'] || 0} — cherche : hommes ${byR['Des hommes'] || 0}, femmes ${byR['Des femmes'] || 0}, les deux ${byR['Les deux'] || 0}. (Les désinscrits sont exclus automatiquement.)</p>
+
+      <label>Soirée liée <span class=hint>(le {lien} du message pointera vers sa page de réservation)</span></label>
+      <select name=soiree><option value="">— Aucune (le lien mène au site ${esc(SITE_URL)}) —</option>${soirees.map((s) => `<option value="${esc(s.code)}">${esc(s.date_texte || s.code)} (${esc(s.code)})</option>`).join('')}</select>
+
       <label>Objet</label>
-      <input name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
+      <input id=subject name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
       <label>Message</label>
-      <textarea name=body rows=10 required placeholder="Bonjour {prenom},&#10;&#10;…"></textarea>
-      <p class=hint>Écris <b>{prenom}</b> pour insérer le prénom de chacun. Un lien de désinscription est ajouté automatiquement en bas de l'e-mail.</p>
+      <textarea id=body name=body rows=14 required placeholder="Bonjour {prenom},&#10;&#10;…"></textarea>
+      <p class=hint>Repères : <b>{prenom}</b> = le prénom de chacun · <b>{lien}</b> = le lien de réservation (pour l'instant, le site ${esc(SITE_URL)} ; il pointera bientôt vers la soirée choisie). Un lien de désinscription est ajouté automatiquement en bas.</p>
       <div style="margin-top:14px"><button ${off ? 'disabled' : ''}>Envoyer</button></div>
     </form>
-  </div></html>`;
+  </div>
+  <script>
+    const TPL = ${JSON.stringify(TEMPLATES)};
+    document.getElementById('tpl').addEventListener('change', function(e){
+      const i = +e.target.value; if (i < 0) return;
+      const subj = document.getElementById('subject'), body = document.getElementById('body');
+      if ((subj.value || body.value) && !confirm('Remplacer l\\'objet et le message par ce modèle ?')) { e.target.value = '-1'; return; }
+      subj.value = TPL[i].subject; body.value = TPL[i].body;
+    });
+  </script></html>`;
 }
 
 function editPage(r) {
@@ -403,12 +637,9 @@ function editPage(r) {
 }
 
 function unsubPage(ok) {
-  return `${pageHead('Désinscription')}
-  <div class=wrap><div class=panel>
-    ${ok
-      ? '<h2>C\'est fait ✓</h2><p>Tu ne recevras plus d\'e-mails de la Soirée Match. Si c\'était une erreur, écris-nous à contact@soireematch.com.</p>'
-      : '<h2>Lien invalide</h2><p>Ce lien de désinscription n\'est pas valide. Écris-nous à contact@soireematch.com et on s\'en occupe.</p>'}
-  </div></div></html>`;
+  return ok
+    ? pubMsg('C\'est fait ✓', 'Tu ne recevras plus d\'e-mails de la Soirée Match. Si c\'était une erreur, écris-nous à contact@soireematch.com.')
+    : pubMsg('Lien invalide', 'Ce lien de désinscription n\'est pas valide. Écris-nous à contact@soireematch.com et on s\'en occupe.');
 }
 
 // ---------- Serveur ----------
@@ -450,6 +681,35 @@ const server = http.createServer(async (req, res) => {
     const valid = !!good && t.length === good.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(good));
     if (valid) db.prepare('UPDATE inscriptions SET unsubscribed=1 WHERE lower(email)=lower(?)').run(email);
     return send(res, 200, unsubPage(valid));
+  }
+
+  // Page de réservation publique : /soiree/CODE
+  if (p.startsWith('/soiree/')) {
+    const code = decodeURIComponent(p.slice('/soiree/'.length)).replace(/\/.*$/, '').trim();
+    const so = getSoiree(code);
+    if (req.method === 'GET') {
+      if (!so) return send(res, 404, pubMsg('Soirée introuvable', 'Ce lien de réservation n\'existe pas ou plus. Écris-nous à contact@soireematch.com.'));
+      if (!so.actif) return send(res, 200, pubMsg('Réservations fermées', 'Les réservations pour cette soirée ne sont pas ouvertes pour le moment.'));
+      return send(res, 200, soireePage(so));
+    }
+    if (req.method === 'POST') {
+      if (!so || !so.actif) return send(res, 404, pubMsg('Soirée indisponible', 'Ce lien n\'est plus valable.'));
+      const d = parseForm(await readBody(req));
+      if (d.website) return send(res, 200, soireeOkPage(so));   // honeypot
+      if (rateLimited(ip)) return send(res, 429, soireePage(so, 'Trop de tentatives, réessaie dans une minute.'));
+      const prenom = (d.prenom || '').trim(), nom = (d.nom || '').trim(), email = (d.email || '').trim();
+      const tel = (d.tel || '').trim(), annee = parseInt(d.annee, 10);
+      const genre = (d.genre || '').trim(), recherche = (d.recherche || '').trim();
+      const consent = (d.consent === 'on' || d.consent === true || d.consent === '1');
+      if (!prenom || !nom || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !tel ||
+          !(annee >= 1930 && annee <= new Date().getFullYear()) || !genre || !recherche || !consent) {
+        return send(res, 200, soireePage(so, 'Merci de remplir tous les champs correctement et de cocher le consentement.'));
+      }
+      db.prepare(`INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`).run(so.id, prenom, nom, email, tel, annee, genre, recherche, new Date().toISOString());
+      sendReservationMail(so, { prenom, nom, email });   // non bloquant
+      return send(res, 200, soireeOkPage(so));
+    }
   }
 
   // Admin — login
@@ -511,9 +771,55 @@ const server = http.createServer(async (req, res) => {
       const subject = (d.subject || '').trim(), body = (d.body || '').trim();
       const genre = (d.genre || '').trim(), recherche = (d.recherche || '').trim();
       if (!transporter || !subject || !body) return send(res, 302, '', { Location: '/admin/compose' });
+      const so = (d.soiree || '').trim() ? getSoiree((d.soiree || '').trim()) : null;
+      const linkUrl = so ? soireeLink(so.code) : SITE_URL;
       const recips = recipientsFor({ genre, recherche });
-      runCampaign(recips, subject, body);   // en arrière-plan (non bloquant)
+      runCampaign(recips, subject, body, linkUrl);   // en arrière-plan (non bloquant)
       return send(res, 302, '', { Location: '/admin' });
+    }
+
+    // Gestion des soirées
+    if (p === '/admin/soirees' && req.method === 'GET') return send(res, 200, soireesPage());
+    if (p === '/admin/soirees' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      const code = (d.code || '').trim().replace(/\s+/g, '').toLowerCase();
+      if (code) {
+        try {
+          db.prepare('INSERT INTO soirees(code,date_texte,lieu,prix,actif,created_at) VALUES(?,?,?,?,?,?)')
+            .run(code, (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, new Date().toISOString());
+        } catch { /* code déjà utilisé */ }
+      }
+      return send(res, 302, '', { Location: '/admin/soirees' });
+    }
+    if (p === '/admin/soirees/edit' && req.method === 'GET') {
+      const s = getSoireeById(Number(url.searchParams.get('id')));
+      if (!s) return send(res, 302, '', { Location: '/admin/soirees' });
+      return send(res, 200, soireeEditPage(s));
+    }
+    if (p === '/admin/soirees/edit' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      const id = Number(d.id);
+      if (id) try {
+        db.prepare('UPDATE soirees SET code=?,date_texte=?,lieu=?,prix=?,actif=? WHERE id=?')
+          .run((d.code || '').trim().replace(/\s+/g, '').toLowerCase(), (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, id);
+      } catch { /* code en conflit */ }
+      return send(res, 302, '', { Location: '/admin/soirees' });
+    }
+    if (p === '/admin/soirees/delete' && req.method === 'POST') {
+      const id = Number(parseForm(await readBody(req)).id);
+      if (id) { db.prepare('DELETE FROM reservations WHERE soiree_id=?').run(id); db.prepare('DELETE FROM soirees WHERE id=?').run(id); }
+      return send(res, 302, '', { Location: '/admin/soirees' });
+    }
+    if (p === '/admin/soirees/reservations' && req.method === 'GET') {
+      const s = getSoireeById(Number(url.searchParams.get('id')));
+      if (!s) return send(res, 302, '', { Location: '/admin/soirees' });
+      return send(res, 200, reservationsPage(s));
+    }
+    if (p === '/admin/soirees/reservations/export' && req.method === 'GET') {
+      const s = getSoireeById(Number(url.searchParams.get('id')));
+      if (!s) return send(res, 302, '', { Location: '/admin/soirees' });
+      const rows = db.prepare('SELECT * FROM reservations WHERE soiree_id=? ORDER BY id DESC').all(s.id);
+      return send(res, 200, resaCSV(rows), { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="resa-${s.code}.csv"` });
     }
 
     // Éditer une fiche
