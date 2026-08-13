@@ -190,9 +190,49 @@ db.exec(`CREATE TABLE IF NOT EXISTS reservations(
   id INTEGER PRIMARY KEY AUTOINCREMENT, soiree_id INTEGER,
   prenom TEXT, nom TEXT, email TEXT, tel TEXT, annee INTEGER, genre TEXT, recherche TEXT,
   created_at TEXT, paid INTEGER DEFAULT 0)`);
+try { db.exec('ALTER TABLE soirees ADD COLUMN tranche TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN type TEXT'); } catch { /* déjà là */ }
+
 const getSoiree = (code) => db.prepare('SELECT * FROM soirees WHERE code=?').get(code);
 const getSoireeById = (id) => db.prepare('SELECT * FROM soirees WHERE id=?').get(id);
 const soireeLink = (code) => `${SITE_URL}/soiree/${encodeURIComponent(code)}`;
+
+// ---------- Routage : lien de réservation personnalisé + correspondance profil → soirées ----------
+const TYPES = ['Hétéro', 'Gay hommes', 'Gay femmes'];
+const TRANCHES = ['30-40', '40-50', '50-60'];
+const resaToken = (email) => crypto.createHmac('sha256', SECRET).update('resa:' + String(email).toLowerCase()).digest('base64url');
+const resaLink = (email) => `${SITE_URL}/reserver?e=${encodeURIComponent(email)}&t=${resaToken(email)}`;
+const ageOf = (annee) => new Date().getFullYear() - Number(annee);
+
+function allowedTypes(genre, recherche) {
+  // Bisexuel·le → uniquement la soirée gay de son genre (exclu des soirées hétéro)
+  if (recherche === 'Les deux') {
+    if (genre === 'Homme') return ['Gay hommes'];
+    if (genre === 'Femme') return ['Gay femmes'];
+    return [];   // non binaire + les deux : pas de soirée dédiée pour l'instant
+  }
+  // Strictement hétéro
+  if (genre === 'Femme' && recherche === 'Des hommes') return ['Hétéro'];
+  if (genre === 'Homme' && recherche === 'Des femmes') return ['Hétéro'];
+  // Gay (gays + bi via la branche ci-dessus)
+  if (genre === 'Homme' && recherche === 'Des hommes') return ['Gay hommes'];
+  if (genre === 'Femme' && recherche === 'Des femmes') return ['Gay femmes'];
+  // Non binaire (et cas non couverts) : exclu des hétéro, pas de soirée dédiée pour l'instant
+  return [];
+}
+function trancheOk(tranche, age) {
+  if (!tranche || !Number.isFinite(age)) return true;   // soirée sans tranche = visible par tous
+  const m = String(tranche).match(/(\d+)\s*[-–]\s*(\d+)/);
+  if (!m) return true;
+  return age >= (+m[1] - 3) && age <= (+m[2] + 3);       // souplesse ±3 ans
+}
+function matchingSoirees(person) {
+  const types = allowedTypes(person.genre, person.recherche);
+  if (!types.length) return [];   // profil sans soirée dédiée (non binaire / bi non binaire)
+  const age = ageOf(person.annee);
+  return db.prepare('SELECT * FROM soirees WHERE actif=1 ORDER BY id DESC').all()
+    .filter((s) => (!s.type || types.includes(s.type)) && trancheOk(s.tranche, age));
+}
 
 function sendReservationMail(so, i) {
   if (!transporter) return;
@@ -219,11 +259,15 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL) {
   for (const r of recipients) {
     const prenom = (r.prenom || '').trim() || 'à toi';
     const unsub = unsubLink(r.email);
-    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl);
+    const resa = resaLink(r.email);
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
+    const btn = `<a href="${resa}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Je réserve ma place</a>`;
     const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
-      .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`).replace(/\n/g, '<br>');
+      .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
+      .replace(/\{reserver\}/gi, btn)
+      .replace(/\n/g, '<br>');
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:540px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55">`
       + htmlBody
       + `<hr style="border:none;border-top:1px solid #e0e0e0;margin:22px 0">`
@@ -396,6 +440,11 @@ input,select{width:100%;padding:12px 14px;border:1px solid #d3e5e2;border-radius
 .facts b{display:block;font-size:1.05rem;color:#2f7d8a}.facts span{font-size:.8rem;color:#566b6a}
 .consent{display:flex;gap:9px;align-items:flex-start;font-size:.85rem;color:#566b6a;margin-top:16px}
 .consent input{width:auto}
+.soi{display:flex;justify-content:space-between;align-items:center;gap:14px;border:1px solid #d3e5e2;border-radius:14px;padding:16px 18px;margin-top:14px;flex-wrap:wrap}
+.soi .info b{font-size:1.1rem}
+.tag{display:inline-block;background:#eef5f3;color:#2f7d8a;border-radius:20px;padding:2px 10px;font-size:.75rem;font-weight:600;margin-left:6px}
+.soi form{margin:0}
+.soi .btn{width:auto;margin:0;padding:12px 22px;white-space:nowrap}
 a{color:#2f7d8a}`;
 const siteHead = (title) => `<!doctype html><html lang=fr><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>${title}</title><style>${PUB_CSS}</style>`;
 const pubMsg = (title, html) => `${siteHead(title)}<div class=box><h1>${esc(title)}</h1><p>${html}</p></div></html>`;
@@ -418,8 +467,8 @@ function soireePage(so, err) {
       <label>E-mail</label><input type=email name=email required>
       <label>Téléphone mobile</label><input name=tel required>
       <label>Année de naissance</label><input name=annee type=number min=1930 max=2010 placeholder="ex. 1990" required>
-      <label>Je suis</label><select name=genre required><option value="">—</option>${['Femme', 'Homme', 'Non binaire'].map(opt).join('')}</select>
-      <label>Je m'intéresse à</label><select name=recherche required><option value="">—</option>${['Des hommes', 'Des femmes', 'Les deux'].map(opt).join('')}</select>
+      <label>Je suis</label><select name=genre required><option value="">—</option>${['Femme', 'Homme'].map(opt).join('')}</select>
+      <label>Je m'intéresse à</label><select name=recherche required><option value="">—</option><option>Des hommes</option><option>Des femmes</option></select>
       <div style="position:absolute;left:-9999px" aria-hidden=true><input name=website tabindex=-1 autocomplete=off></div>
       <label class=consent><input type=checkbox name=consent required> J'accepte que mes données soient conservées pour gérer ma réservation et m'informer des prochaines soirées.</label>
       <button class=btn>Je réserve ma place</button>
@@ -430,10 +479,35 @@ function soireeOkPage(so) {
   return `${siteHead('Réservation confirmée')}<div class=box><h1>C'est réservé ✓</h1><p>Ta place pour la Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''} est bien enregistrée. Tu vas recevoir un e-mail de confirmation. On a hâte de te voir&nbsp;! 💛</p></div></html>`;
 }
 
+function choisirPage(person) {
+  const prenom = (person.prenom || '').trim() || 'à toi';
+  const tok = resaToken(person.email);
+  const soirees = matchingSoirees(person);
+  const cards = soirees.map((s) => `
+    <div class=soi>
+      <div class=info>
+        <b>${esc(s.date_texte || s.code)}</b>${s.type ? `<span class=tag>${esc(s.type)}</span>` : ''}${s.tranche ? `<span class=tag>${esc(s.tranche)} ans</span>` : ''}
+        ${s.lieu ? `<div class=muted>${esc(s.lieu)}</div>` : ''}${s.prix ? `<div class=muted>Entrée : ${esc(s.prix)}</div>` : ''}
+      </div>
+      <form method=post action=/reserver/confirm>
+        <input type=hidden name=e value="${esc(person.email)}">
+        <input type=hidden name=t value="${esc(tok)}">
+        <input type=hidden name=soiree value="${s.id}">
+        <button class=btn>Je réserve ma place</button>
+      </form>
+    </div>`).join('');
+  return `${siteHead('Choisis ta soirée — Soirée Match')}
+  <div class=box>
+    <h1>Bonjour ${esc(prenom)} 👋</h1>
+    <p class=muted>Voici les soirées qui te correspondent. Clique pour réserver ta place — rien à retaper.</p>
+    ${soirees.length ? cards : '<p style="margin-top:16px">Pas encore de soirée ouverte pour ton profil — on te préviendra dès qu\'une date est fixée&nbsp;! 💛</p>'}
+  </div></html>`;
+}
+
 function soireesPage() {
   const list = db.prepare('SELECT s.*, (SELECT COUNT(*) FROM reservations r WHERE r.soiree_id=s.id) resa FROM soirees s ORDER BY s.id DESC').all();
   const rows = list.map((s) => `<tr>
-    <td><b>${esc(s.code)}</b></td><td>${esc(s.date_texte)}</td><td>${esc(s.lieu)}</td><td>${esc(s.prix)}</td>
+    <td><b>${esc(s.code)}</b></td><td>${esc(s.date_texte)}</td><td>${esc(s.lieu)}</td><td>${esc(s.prix)}</td><td>${esc(s.type || '—')}</td><td>${esc(s.tranche || '—')}</td>
     <td>${s.actif ? '✅' : '—'}</td><td>${s.resa}</td>
     <td><a href="${soireeLink(s.code)}" target=_blank>Lien</a> · <a href="/admin/soirees/reservations?id=${s.id}">Réservations</a> · <a href="/admin/soirees/edit?id=${s.id}">Éditer</a></td>
   </tr>`).join('');
@@ -448,11 +522,16 @@ function soireesPage() {
       </div>
       <label>Lieu</label><input name=lieu placeholder="ex. Bar Le Dancing, Bd des Roches 19, 1006 Lausanne" style="width:100%">
       <label>Prix</label><input name=prix placeholder="ex. 20 CHF" style="width:100%">
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <span style="flex:1;min-width:150px"><label>Type</label><select name=type style="width:100%"><option value="">—</option>${TYPES.map((v) => `<option>${v}</option>`).join('')}</select></span>
+        <span style="flex:1;min-width:150px"><label>Tranche d'âge</label><select name=tranche style="width:100%"><option value="">—</option>${TRANCHES.map((v) => `<option>${v}</option>`).join('')}</select></span>
+      </div>
+      <p class=hint>Type + tranche d'âge servent au routage : chaque inscrit ne verra que les soirées qui le concernent.</p>
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif checked style="width:auto"> Active (réservations ouvertes)</label>
       <div style="margin-top:14px"><button>Créer la soirée</button></div>
     </form>
     ${list.length ? `<table style="margin-top:18px">
-      <tr><th>Code</th><th>Date</th><th>Lieu</th><th>Prix</th><th>Active</th><th>Résa</th><th>Actions</th></tr>${rows}</table>`
+      <tr><th>Code</th><th>Date</th><th>Lieu</th><th>Prix</th><th>Type</th><th>Âge</th><th>Active</th><th>Résa</th><th>Actions</th></tr>${rows}</table>`
       : `<div class=empty>Aucune soirée. Crée la première ci-dessus, puis mets son <b>{lien}</b> dans un e-mail.</div>`}
   </div></html>`;
 }
@@ -467,6 +546,8 @@ function soireeEditPage(s) {
       <label>Date</label><input name=date_texte value="${esc(s.date_texte)}" style="width:100%">
       <label>Lieu</label><input name=lieu value="${esc(s.lieu)}" style="width:100%">
       <label>Prix</label><input name=prix value="${esc(s.prix)}" style="width:100%">
+      <label>Type</label><select name=type style="width:100%"><option value="">—</option>${TYPES.map((v) => `<option${v === s.type ? ' selected' : ''}>${v}</option>`).join('')}</select>
+      <label>Tranche d'âge</label><select name=tranche style="width:100%"><option value="">—</option>${TRANCHES.map((v) => `<option${v === s.tranche ? ' selected' : ''}>${v}</option>`).join('')}</select>
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif ${s.actif ? 'checked' : ''} style="width:auto"> Active</label>
       <div style="margin-top:14px"><button>Enregistrer</button> <a href="/admin/soirees"><button type=button class=sec>Annuler</button></a></div>
     </form>
@@ -505,7 +586,7 @@ Un petit mot qui compte : la salle nous est gentiment offerte par le bar. Alors 
 
 Au programme : des jeux intelligents pour se découvrir, se comprendre vraiment et briser la glace, de la musique, quelques fous rires, et surtout de vraies rencontres humaines autour d'un verre — sans applis, sans rejet, sans faux-semblants.
 
-👉 Réserve ta place ici : {lien}`;
+👉 {reserver}`;
 
 const SIGNOFF = `On a hâte de te (re)voir. Belle semaine à toi !
 
@@ -600,7 +681,7 @@ function composePage() {
       <input id=subject name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
       <label>Message</label>
       <textarea id=body name=body rows=14 required placeholder="Bonjour {prenom},&#10;&#10;…"></textarea>
-      <p class=hint>Repères : <b>{prenom}</b> = le prénom de chacun · <b>{lien}</b> = le lien de réservation (pour l'instant, le site ${esc(SITE_URL)} ; il pointera bientôt vers la soirée choisie). Un lien de désinscription est ajouté automatiquement en bas.</p>
+      <p class=hint>Repères : <b>{prenom}</b> = le prénom de chacun · <b>{reserver}</b> = bouton personnalisé « Je réserve ma place » (chaque personne arrive sur une page qui lui montre <b>automatiquement les soirées qui la concernent</b> selon son âge, son sexe et qui elle cherche — réservation en un clic). <b>{lien}</b> = un lien fixe vers la soirée liée ci-dessus, ou le site. Un lien de désinscription est ajouté automatiquement en bas.</p>
       <div style="margin-top:14px"><button ${off ? 'disabled' : ''}>Envoyer</button></div>
     </form>
   </div>
@@ -712,6 +793,33 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // Réservation personnalisée depuis l'e-mail : page « choisis ta soirée » + 1 clic
+  if (p === '/reserver' && req.method === 'GET') {
+    const email = url.searchParams.get('e') || '';
+    const t = url.searchParams.get('t') || '';
+    const good = email ? resaToken(email) : '';
+    const valid = !!good && t.length === good.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(good));
+    const person = valid ? db.prepare('SELECT * FROM inscriptions WHERE lower(email)=lower(?)').get(email) : null;
+    if (!person) return send(res, 200, pubMsg('Lien invalide', 'Ce lien de réservation n\'est plus valide. Inscris-toi sur soireematch.com.'));
+    return send(res, 200, choisirPage(person));
+  }
+  if (p === '/reserver/confirm' && req.method === 'POST') {
+    const d = parseForm(await readBody(req));
+    const email = (d.e || '').trim(), t = String(d.t || '');
+    const good = email ? resaToken(email) : '';
+    const valid = !!good && t.length === good.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(good));
+    const person = valid ? db.prepare('SELECT * FROM inscriptions WHERE lower(email)=lower(?)').get(email) : null;
+    const so = getSoireeById(Number(d.soiree));
+    if (!person || !so) return send(res, 200, pubMsg('Oups', 'Réservation impossible. Réessaie depuis le lien de ton e-mail.'));
+    const dup = db.prepare('SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?)').get(so.id, email);
+    if (!dup) {
+      db.prepare(`INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`).run(so.id, person.prenom, person.nom, person.email, person.tel, person.annee, person.genre, person.recherche, new Date().toISOString());
+      sendReservationMail(so, { prenom: person.prenom, nom: person.nom, email: person.email });
+    }
+    return send(res, 200, soireeOkPage(so));
+  }
+
   // Admin — login
   if (p === '/admin/login' && req.method === 'GET') return send(res, 200, loginPage());
   if (p === '/admin/login' && req.method === 'POST') {
@@ -785,8 +893,8 @@ const server = http.createServer(async (req, res) => {
       const code = (d.code || '').trim().replace(/\s+/g, '').toLowerCase();
       if (code) {
         try {
-          db.prepare('INSERT INTO soirees(code,date_texte,lieu,prix,actif,created_at) VALUES(?,?,?,?,?,?)')
-            .run(code, (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, new Date().toISOString());
+          db.prepare('INSERT INTO soirees(code,date_texte,lieu,prix,actif,created_at,type,tranche) VALUES(?,?,?,?,?,?,?,?)')
+            .run(code, (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, new Date().toISOString(), (d.type || '').trim(), (d.tranche || '').trim());
         } catch { /* code déjà utilisé */ }
       }
       return send(res, 302, '', { Location: '/admin/soirees' });
@@ -800,8 +908,8 @@ const server = http.createServer(async (req, res) => {
       const d = parseForm(await readBody(req));
       const id = Number(d.id);
       if (id) try {
-        db.prepare('UPDATE soirees SET code=?,date_texte=?,lieu=?,prix=?,actif=? WHERE id=?')
-          .run((d.code || '').trim().replace(/\s+/g, '').toLowerCase(), (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, id);
+        db.prepare('UPDATE soirees SET code=?,date_texte=?,lieu=?,prix=?,actif=?,type=?,tranche=? WHERE id=?')
+          .run((d.code || '').trim().replace(/\s+/g, '').toLowerCase(), (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, (d.type || '').trim(), (d.tranche || '').trim(), id);
       } catch { /* code en conflit */ }
       return send(res, 302, '', { Location: '/admin/soirees' });
     }
