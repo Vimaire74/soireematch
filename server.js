@@ -33,7 +33,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS inscriptions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,
   prenom TEXT, nom TEXT, email TEXT, tel TEXT, annee INTEGER,
-  genre TEXT, recherche TEXT, consent INTEGER,
+  genre TEXT, recherche TEXT, langues TEXT, consent INTEGER,
   ip TEXT, ua TEXT
 )`);
 
@@ -93,7 +93,7 @@ Une question ? Réponds simplement à cet e-mail.`,
     transporter.sendMail({
       from: MAIL_FROM, to: NOTIFY_TO,
       subject: `Nouvelle inscription : ${i.prenom} ${i.nom}`,
-      text: `${i.prenom} ${i.nom}\n${i.email} — ${i.tel}\nNé(e) en ${i.annee} · ${i.genre} · cherche : ${i.recherche}`,
+      text: `${i.prenom} ${i.nom}\n${i.email} — ${i.tel}\nNé(e) en ${i.annee} · ${i.genre} · cherche : ${i.recherche}\nLangues : ${i.langues || '—'}`,
     }).catch((e) => console.error('Notif organisateur échouée:', e.message));
   }
 }
@@ -177,6 +177,7 @@ function rateLimited(ip) {
 
 // ---------- Désinscription + campagnes e-mail ----------
 try { db.exec('ALTER TABLE inscriptions ADD COLUMN unsubscribed INTEGER DEFAULT 0'); } catch { /* colonne déjà présente */ }
+try { db.exec('ALTER TABLE inscriptions ADD COLUMN langues TEXT'); } catch { /* colonne déjà présente */ }
 
 const SITE_URL = (process.env.SITE_URL || cfg.siteUrl || 'https://soireematch.com').replace(/\/+$/, '');
 const unsubToken = (email) => crypto.createHmac('sha256', SECRET).update('unsub:' + String(email).toLowerCase()).digest('base64url');
@@ -361,11 +362,12 @@ function loginPage(err) {
 
 function adminPage(query) {
   const q = (query.q || '').trim();
-  const fg = query.genre || '', fr = query.recherche || '';
+  const fg = query.genre || '', fr = query.recherche || '', fl = query.langue || '';
   let sql = 'SELECT * FROM inscriptions WHERE 1=1', args = [];
   if (q) { sql += ' AND (prenom LIKE ? OR nom LIKE ? OR email LIKE ?)'; const l = `%${q}%`; args.push(l, l, l); }
   if (fg) { sql += ' AND genre = ?'; args.push(fg); }
   if (fr) { sql += ' AND recherche = ?'; args.push(fr); }
+  if (fl) { sql += ' AND langues LIKE ?'; args.push(`%${fl}%`); }
   sql += ' ORDER BY id DESC';
   const rows = db.prepare(sql).all(...args);
   const s = stats();
@@ -380,6 +382,7 @@ function adminPage(query) {
     <td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a>${r.unsubscribed ? ' <span title="Désinscrit" style="color:#c0392b">🚫</span>' : ''}</td>
     <td>${esc(r.tel)}</td><td>${esc(r.annee)}</td>
     <td>${esc(r.genre)}</td><td>${esc(r.recherche)}</td>
+    <td>${esc(r.langues || '')}</td>
     <td><a href="/admin/edit?id=${r.id}">Éditer</a></td>
   </tr>`).join('');
 
@@ -399,6 +402,7 @@ function adminPage(query) {
       <input name=q value="${esc(q)}" placeholder="Rechercher nom / e-mail…">
       <select name=genre><option value="">Tous genres</option>${['Femme', 'Homme', 'Non binaire'].map((v) => opt(v, fg)).join('')}</select>
       <select name=recherche><option value="">Toutes recherches</option>${['Des hommes', 'Des femmes', 'Les deux'].map((v) => opt(v, fr)).join('')}</select>
+      <select name=langue><option value="">Toutes langues</option>${['Français', 'Anglais', 'Espagnol', 'Allemand', 'Italien'].map((v) => opt(v, fl)).join('')}</select>
       <button>Filtrer</button>
       <a href=/admin><button type=button class=sec>Réinitialiser</button></a>
     </form>
@@ -407,20 +411,20 @@ function adminPage(query) {
     <div class=bar>
       <a href="/admin/compose"><button type=button>✉ Écrire aux inscrits</button></a>
       <button form=act formaction=/admin/export>⬇ Exporter la sélection (CSV)</button>
-      <a href="/admin/export?all=1${q || fg || fr ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
+      <a href="/admin/export?all=1${q || fg || fr || fl ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) + '&langue=' + encodeURIComponent(fl) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
       <button form=act formaction=/admin/delete class=danger onclick="return confirm('Supprimer les inscriptions sélectionnées ?')">🗑 Supprimer la sélection</button>
     </div>
 
     ${rows.length ? `<table>
       <tr><th><input type=checkbox onclick="document.querySelectorAll('input[name=ids]').forEach(c=>c.checked=this.checked)"></th>
-      <th>Date</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Tél</th><th>Année</th><th>Genre</th><th>Recherche</th><th>Actions</th></tr>
+      <th>Date</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Tél</th><th>Année</th><th>Genre</th><th>Recherche</th><th>Langues</th><th>Actions</th></tr>
       ${trs}
     </table>` : `<div class=empty>Aucune inscription pour l'instant.</div>`}
   </div></html>`;
 }
 
 function toCSV(rows) {
-  const cols = ['id', 'created_at', 'prenom', 'nom', 'email', 'tel', 'annee', 'genre', 'recherche'];
+  const cols = ['id', 'created_at', 'prenom', 'nom', 'email', 'tel', 'annee', 'genre', 'recherche', 'langues'];
   const q = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
   const lines = [cols.join(',')];
   rows.forEach((r) => lines.push(cols.map((c) => q(r[c])).join(',')));
@@ -737,14 +741,15 @@ const server = http.createServer(async (req, res) => {
     const prenom = (d.prenom || '').trim(), nom = (d.nom || '').trim(), email = (d.email || '').trim();
     const tel = (d.tel || '').trim(), annee = parseInt(d.annee, 10);
     const genre = (d.genre || '').trim(), recherche = (d.recherche || '').trim();
+    const langues = (d.langues || '').trim();
     const consent = (d.consent === 'on' || d.consent === true || d.consent === '1') ? 1 : 0;
     if (!prenom || !nom || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !tel ||
         !(annee >= 1930 && annee <= new Date().getFullYear()) || !genre || !recherche || !consent) {
       return json(res, 400, { ok: false, error: 'Merci de remplir tous les champs correctement (et de cocher le consentement).' });
     }
-    db.prepare(`INSERT INTO inscriptions(created_at,prenom,nom,email,tel,annee,genre,recherche,consent,ip,ua)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(new Date().toISOString(), prenom, nom, email, tel, annee, genre, recherche, consent, ip, (req.headers['user-agent'] || '').slice(0, 300));
-    sendConfirmation({ prenom, nom, email, tel, annee, genre, recherche });   // envoi non bloquant
+    db.prepare(`INSERT INTO inscriptions(created_at,prenom,nom,email,tel,annee,genre,recherche,langues,consent,ip,ua)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(new Date().toISOString(), prenom, nom, email, tel, annee, genre, recherche, langues, consent, ip, (req.headers['user-agent'] || '').slice(0, 300));
+    sendConfirmation({ prenom, nom, email, tel, annee, genre, recherche, langues });   // envoi non bloquant
     return json(res, 200, { ok: true });
   }
 
@@ -843,11 +848,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/admin/export') {
       let rows;
       if (url.searchParams.get('all')) {
-        const q = url.searchParams.get('q') || '', fg = url.searchParams.get('genre') || '', fr = url.searchParams.get('recherche') || '';
+        const q = url.searchParams.get('q') || '', fg = url.searchParams.get('genre') || '', fr = url.searchParams.get('recherche') || '', fl = url.searchParams.get('langue') || '';
         let sql = 'SELECT * FROM inscriptions WHERE 1=1', args = [];
         if (q) { sql += ' AND (prenom LIKE ? OR nom LIKE ? OR email LIKE ?)'; const l = `%${q}%`; args.push(l, l, l); }
         if (fg) { sql += ' AND genre=?'; args.push(fg); }
         if (fr) { sql += ' AND recherche=?'; args.push(fr); }
+        if (fl) { sql += ' AND langues LIKE ?'; args.push(`%${fl}%`); }
         sql += ' ORDER BY id DESC';
         rows = db.prepare(sql).all(...args);
       } else {
