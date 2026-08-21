@@ -54,7 +54,7 @@
     padding:3px;cursor:pointer;line-height:0;box-shadow:0 1px 5px rgba(0,0,0,.18);display:flex;align-items:center;gap:0}
   .lang-menu button:hover{transform:translateY(-1px)}
   .lang-menu button.active{outline:2px solid var(--accent);outline-offset:0}
-  .lang-menu svg{width:23px;height:15px;border-radius:2px;display:block;object-fit:cover}
+  .lang-menu svg{width:19px;height:13px;border-radius:2px;display:block;object-fit:cover}
   .lang-menu button span{display:none;font-size:.9rem;color:var(--ink);font-weight:600;padding-right:4px}
   @media (max-width:600px){
     .lang-toggle{display:inline-flex}
@@ -65,6 +65,16 @@
     .lang-menu button.active{outline:none;background:var(--insc-bg)}
     .lang-menu button span{display:inline}
     .lang-menu svg{width:26px;height:17px}
+  }
+
+  /* ===== Encadré « se faire des amis » ===== */
+  .friends-box{position:fixed;right:16px;bottom:16px;z-index:55;max-width:240px;
+    background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);
+    border-radius:12px;padding:14px 16px;box-shadow:0 8px 26px rgba(0,0,0,.20)}
+  .friends-box h4{font-size:.98rem;color:var(--accent-dark);margin:0 0 5px;font-weight:700}
+  .friends-box p{color:var(--muted);font-size:.85rem;line-height:1.5;margin:0}
+  @media (max-width:600px){
+    .friends-box{position:static;max-width:none;margin:0 18px 30px;box-shadow:0 4px 16px rgba(0,0,0,.14)}
   }
 
   /* ===== MOTIF MUDÉJAR ===== */
@@ -309,6 +319,11 @@
   </div>
 </section>
 
+<div class="friends-box">
+  <h4 data-i18n="friends_h">Se faire facilement des amis</h4>
+  <p data-i18n="friends_p">Il est très probable que vous puissiez — à travers les jeux proposés et la découverte de vos points communs — rencontrer de futurs amis.</p>
+</div>
+
 <footer>
   <div class="wrap">
     <p data-i18n="footer_line"><strong>Soirée Match</strong> — Rencontres pour célibataires · Lausanne</p>
@@ -414,6 +429,8 @@
     footer_line:{fr:"<strong>Soirée Match</strong> — Rencontres pour célibataires · Lausanne",en:"<strong>Soirée Match</strong> — Singles events · Lausanne",de:"<strong>Soirée Match</strong> — Singletreffen · Lausanne",it:"<strong>Soirée Match</strong> — Incontri per single · Lausanne",es:"<strong>Soirée Match</strong> — Encuentros para solteros · Lausana"},
     footer_q:{fr:"Une question&nbsp;? <a href=\"mailto:contact@soireematch.com\">contact@soireematch.com</a>",en:"A question? <a href=\"mailto:contact@soireematch.com\">contact@soireematch.com</a>",de:"Eine Frage? <a href=\"mailto:contact@soireematch.com\">contact@soireematch.com</a>",it:"Una domanda? <a href=\"mailto:contact@soireematch.com\">contact@soireematch.com</a>",es:"¿Alguna pregunta? <a href=\"mailto:contact@soireematch.com\">contact@soireematch.com</a>"},
 
+    friends_h:{fr:"Se faire facilement des amis",en:"Make friends easily",de:"Leicht Freunde finden",it:"Fare amicizia facilmente",es:"Hacer amigos fácilmente"},
+    friends_p:{fr:"Il est très probable que vous puissiez — à travers les jeux proposés et la découverte de vos points communs — rencontrer de futurs amis.",en:"It’s very likely that — through the games and discovering what you have in common — you’ll meet future friends.",de:"Sehr wahrscheinlich lernen Sie – durch die Spiele und das Entdecken von Gemeinsamkeiten – künftige Freunde kennen.",it:"È molto probabile che — grazie ai giochi e alla scoperta dei vostri punti in comune — incontriate futuri amici.",es:"Es muy probable que —a través de los juegos y el descubrimiento de vuestros puntos en común— conozcáis a futuros amigos."},
     msg_ok:{fr:"🎉 Merci ! Ton inscription est bien enregistrée. Tu recevras les détails par e-mail.",en:"🎉 Thank you! Your registration is confirmed. You’ll receive the details by email.",de:"🎉 Danke! Ihre Anmeldung ist eingegangen. Die Details erhalten Sie per E-Mail.",it:"🎉 Grazie! La tua iscrizione è registrata. Riceverai i dettagli via email.",es:"🎉 ¡Gracias! Tu inscripción está registrada. Recibirás los detalles por correo."},
     msg_needlang:{fr:"Merci d'indiquer au moins une langue parlée.",en:"Please select at least one language you speak.",de:"Bitte geben Sie mindestens eine gesprochene Sprache an.",it:"Indica almeno una lingua parlata.",es:"Indica al menos un idioma que hables."},
     msg_err:{fr:"Une erreur est survenue. Réessaie dans un instant.",en:"Something went wrong. Please try again in a moment.",de:"Ein Fehler ist aufgetreten. Bitte versuchen Sie es gleich noch einmal.",it:"Si è verificato un errore. Riprova tra un istante.",es:"Ha ocurrido un error. Inténtalo de nuevo en un momento."},
