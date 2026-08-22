@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" font-family="DejaVu Sans, sans-serif">
+  <defs><pattern id="zell" patternUnits="userSpaceOnUse" width="60" height="60">
+  <g fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linejoin="round"><polygon points="30,0 60,30 30,60 0,30"/><polygon points="8.8,8.8 51.2,8.8 51.2,51.2 8.8,51.2"/><path d="M0,0 L6,6 M60,0 L54,6 M60,60 L54,54 M0,60 L6,54"/><path d="M30,40 C22.5,32.5 22,31.5 22,27 A4.6,4.6 0 0 1 30,25 A4.6,4.6 0 0 1 38,27 C38,31.5 37.5,32.5 30,40 Z"/></g>
+</pattern></defs>
+  <rect width="1200" height="630" fill="#156b54"/>
+  <rect width="1200" height="630" fill="url(#zell)" opacity="0.10"/>
+  <rect x="28" y="28" width="1144" height="574" rx="24" fill="none" stroke="#d0aa54" stroke-width="3" opacity="0.55"/>
+  <path transform="translate(562.8,115.9) scale(3.1)" fill="#d0aa54" opacity="1.0" d="M12 21 C 8 17 2 13 2 8 C 2 4 5 2 8 2 C 10 2 12 4 12 5 C 12 4 14 2 16 2 C 19 2 22 4 22 8 C 22 13 16 17 12 21 Z"/>
+  <text x="600.0" y="320" text-anchor="middle" fill="#d0aa54" font-size="104" font-weight="bold">Soirée Match</text>
+  <text x="600.0" y="372" text-anchor="middle" fill="#f5faf8" font-size="30" letter-spacing="4" opacity="0.95">RENCONTRES POUR CÉLIBATAIRES · LAUSANNE</text>
+  <text x="600.0" y="452" text-anchor="middle" fill="#ffffff" font-size="38" font-weight="bold">Pas d'applis. De vraies rencontres, en vrai.</text>
+  <text x="600.0" y="502" text-anchor="middle" fill="#f5faf8" font-size="27" opacity="0.92">Des soirées animées par un thérapeute · par tranches d'âge · hétéros &amp; gays</text>
+</svg>
