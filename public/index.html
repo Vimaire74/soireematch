@@ -140,6 +140,11 @@
   .fact .big{font-size:1.3rem;font-weight:700;color:var(--accent-dark)}
   .fact .lbl{font-size:.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-top:4px}
 
+  .dates-grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));max-width:840px;margin:0 auto}
+  .datecard{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:14px;padding:18px 20px;transition:background .3s,border-color .3s}
+  .datecard .d{font-weight:700;color:var(--accent-dark);font-size:1.06rem}
+  .datecard .m{color:var(--muted);font-size:.9rem;margin-top:4px}
+
   #inscription{background:var(--insc-bg);text-align:center;transition:background .3s}
   .form-box{max-width:620px;margin:24px auto 0;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px;text-align:left}
   .insc-form label{display:block;font-weight:600;font-size:.9rem;margin:14px 0 5px}
@@ -195,7 +200,6 @@
     <h1>Soirée Match</h1>
     <p class="lead" data-i18n="hero_lead">De vraies rencontres, en personne. Pas de swipe, pas de messages qui n'aboutissent jamais. Une soirée joyeuse et pleine de surprises, imaginée et animée par un thérapeute : des jeux bien pensés font tomber la glace pour vous, on se découvre, on se plaît — sans timidité, sans buter sur le fameux «&nbsp;quoi dire, comment faire&nbsp;?&nbsp;».</p>
     <a href="#inscription" class="btn" data-i18n="hero_btn">Je m'inscris</a>
-    <p class="meta" data-i18n="hero_meta">Prochaine soirée · 30–40 ans · Hétéro · Lausanne</p>
   </div>
 </header>
 
@@ -245,21 +249,20 @@
     <div class="steps">
       <div class="step"><div class="num">1</div><div><h3 data-i18n="s1_h">Je m'inscris en ligne</h3><p data-i18n="s1_p">Quelques infos, paiement de l'entrée, et c'est réservé.</p></div></div>
       <div class="step"><div class="num">2</div><div><h3 data-i18n="s2_h">Je reçois ma confirmation</h3><p data-i18n="s2_p">Un email de confirmation tout de suite, puis un rappel par SMS deux jours avant.</p></div></div>
-      <div class="step"><div class="num">3</div><div><h3 data-i18n="s3_h">Je viens à la soirée</h3><p data-i18n="s3_p">De 20h à 23h : jeux, musique, rencontres. Il ne reste plus qu'à se laisser porter.</p></div></div>
+      <div class="step"><div class="num">3</div><div><h3 data-i18n="s3_h">Je viens à la soirée</h3><p data-i18n="s3_p">De 20h30 à 23h30 : jeux, musique, rencontres. Il ne reste plus qu'à se laisser porter.</p></div></div>
     </div>
   </div>
 </section>
 
-<!-- INFOS PRATIQUES -->
-<section class="alt">
+<!-- PROCHAINES SOIRÉES -->
+<section class="alt" id="dates">
   <div class="wrap">
-    <h2 data-i18n="facts_h2">Infos pratiques</h2>
-    <p class="sub" data-i18n="facts_sub">Pour la première soirée.</p>
-    <div class="facts">
-      <div class="fact"><div class="big" data-i18n="f1_b">30–40 ans</div><div class="lbl" data-i18n="f1_l">Tranche d'âge</div></div>
-      <div class="fact"><div class="big" data-i18n="f2_b">20h–23h</div><div class="lbl" data-i18n="f2_l">Horaire</div></div>
-      <div class="fact"><div class="big">20 CHF</div><div class="lbl" data-i18n="f3_l">Entrée (hors consos)</div></div>
-      <div class="fact"><div class="big">Lausanne</div><div class="lbl" data-i18n="f4_l">Lieu communiqué à l'inscription</div></div>
+    <h2 data-i18n="dates_h">Prochaines soirées</h2>
+    <p class="sub" data-i18n="dates_sub">À Lausanne · entrée 20 CHF</p>
+    <div class="dates-grid">
+      <div class="datecard"><div class="d" data-i18n="date1">Mardi 15 septembre 2026</div><div class="m" data-i18n="meta1">20h30 · 30–40 ans · Hétéro</div></div>
+      <div class="datecard"><div class="d" data-i18n="date2">Mardi 22 septembre 2026</div><div class="m" data-i18n="meta2">20h30 · 40–50 ans · Hétéro</div></div>
+      <div class="datecard"><div class="d" data-i18n="date3">Mardi 29 septembre 2026</div><div class="m" data-i18n="meta3">20h30 · Hétéro · tranche d'âge à définir</div></div>
     </div>
   </div>
 </section>
@@ -267,8 +270,9 @@
 <!-- INSCRIPTION -->
 <section id="inscription">
   <div class="wrap">
-    <h2 data-i18n="insc_h2">Je m'inscris pour connaître les dates des soirées</h2>
+    <h2 data-i18n="insc_h2">Je m'inscris pour être averti des dates des soirées</h2>
     <p class="sub" data-i18n="insc_sub">Vous recevrez tout de suite un e-mail de confirmation. Pensez à regarder dans vos spams s'il n'arrive pas, et à ajouter contact@soireematch.com à vos contacts.</p>
+    <p class="sub" data-i18n="insc_note" style="margin-top:-26px">Quand des soirées correspondant à votre profil (âge, sexe, orientation) seront programmées, vous recevrez un e-mail : vous pourrez alors vous inscrire à une soirée précise directement depuis cet e-mail. Le paiement se fait à ce moment-là.</p>
 
     <div class="form-box">
       <form class="insc-form" id="inscForm" autocomplete="on">
@@ -360,6 +364,14 @@
     hero_meta:{fr:"Prochaine soirée · 30–40 ans · Hétéro · Lausanne",en:"Next event · Ages 30–40 · Straight · Lausanne",de:"Nächster Abend · 30–40 Jahre · Hetero · Lausanne",it:"Prossima serata · 30–40 anni · Etero · Lausanne",es:"Próxima velada · 30–40 años · Hetero · Lausana"},
     hero_kicker:{fr:"Rencontres pour célibataires · Hétéros &amp; gays · Lausanne",en:"Singles events · Straight &amp; gay · Lausanne",de:"Singletreffen · Hetero &amp; schwul/lesbisch · Lausanne",it:"Incontri per single · Etero e gay · Lausanne",es:"Encuentros para solteros · Hetero y gay · Lausana"},
 
+    dates_h:{fr:"Prochaines soirées",en:"Upcoming events",de:"Nächste Abende",it:"Prossime serate",es:"Próximas veladas"},
+    dates_sub:{fr:"À Lausanne · entrée 20 CHF",en:"In Lausanne · entry 20 CHF",de:"In Lausanne · Eintritt 20 CHF",it:"A Lausanne · ingresso 20 CHF",es:"En Lausana · entrada 20 CHF"},
+    date1:{fr:"Mardi 15 septembre 2026",en:"Tuesday 15 September 2026",de:"Dienstag, 15. September 2026",it:"Martedì 15 settembre 2026",es:"Martes 15 de septiembre de 2026"},
+    meta1:{fr:"20h30 · 30–40 ans · Hétéro",en:"8:30 pm · Ages 30–40 · Straight",de:"20:30 Uhr · 30–40 Jahre · Hetero",it:"20:30 · 30–40 anni · Etero",es:"20:30 · 30–40 años · Hetero"},
+    date2:{fr:"Mardi 22 septembre 2026",en:"Tuesday 22 September 2026",de:"Dienstag, 22. September 2026",it:"Martedì 22 settembre 2026",es:"Martes 22 de septiembre de 2026"},
+    meta2:{fr:"20h30 · 40–50 ans · Hétéro",en:"8:30 pm · Ages 40–50 · Straight",de:"20:30 Uhr · 40–50 Jahre · Hetero",it:"20:30 · 40–50 anni · Etero",es:"20:30 · 40–50 años · Hetero"},
+    date3:{fr:"Mardi 29 septembre 2026",en:"Tuesday 29 September 2026",de:"Dienstag, 29. September 2026",it:"Martedì 29 settembre 2026",es:"Martes 29 de septiembre de 2026"},
+    meta3:{fr:"20h30 · Hétéro · tranche d'âge à définir",en:"8:30 pm · Straight · Age group TBC",de:"20:30 Uhr · Hetero · Altersgruppe noch offen",it:"20:30 · Etero · Fascia d'età da definire",es:"20:30 · Hetero · Franja de edad por definir"},
     why_h2:{fr:"Marre des applis&nbsp;?",en:"Tired of the apps?",de:"Genug von Dating-Apps?",it:"Stanco delle app?",es:"¿Harto de las apps?"},
     why_sub:{fr:"Tinder, Bumble, Hinge… toujours les mêmes déceptions.",en:"Tinder, Bumble, Hinge… always the same disappointments.",de:"Tinder, Bumble, Hinge … immer die gleichen Enttäuschungen.",it:"Tinder, Bumble, Hinge… sempre le stesse delusioni.",es:"Tinder, Bumble, Hinge… siempre las mismas decepciones."},
     why_1:{fr:"<b>La lenteur.</b> Des semaines de messages avant, parfois, un premier verre.",en:"<b>The slowness.</b> Weeks of messaging before — maybe — a first drink.",de:"<b>Die Langsamkeit.</b> Wochenlanges Schreiben vor – vielleicht – einem ersten Drink.",it:"<b>La lentezza.</b> Settimane di messaggi prima di, forse, un primo drink.",es:"<b>La lentitud.</b> Semanas de mensajes antes de, quizá, una primera copa."},
@@ -399,18 +411,19 @@
     s2_h:{fr:"Je reçois ma confirmation",en:"I get my confirmation",de:"Ich erhalte meine Bestätigung",it:"Ricevo la conferma",es:"Recibo mi confirmación"},
     s2_p:{fr:"Un email de confirmation tout de suite, puis un rappel par SMS deux jours avant.",en:"A confirmation email right away, then an SMS reminder two days before.",de:"Sofort eine Bestätigungs-E-Mail, dann zwei Tage vorher eine SMS-Erinnerung.",it:"Un’email di conferma subito, poi un promemoria via SMS due giorni prima.",es:"Un correo de confirmación enseguida y un recordatorio por SMS dos días antes."},
     s3_h:{fr:"Je viens à la soirée",en:"I come to the event",de:"Ich komme zum Abend",it:"Vengo alla serata",es:"Vengo a la velada"},
-    s3_p:{fr:"De 20h à 23h : jeux, musique, rencontres. Il ne reste plus qu'à se laisser porter.",en:"From 8 to 11 pm: games, music, meeting people. All that’s left is to let yourself go with it.",de:"Von 20 bis 23 Uhr: Spiele, Musik, Begegnungen. Man muss sich nur treiben lassen.",it:"Dalle 20 alle 23: giochi, musica, incontri. Non resta che lasciarsi andare.",es:"De 20 a 23 h: juegos, música, encuentros. Solo queda dejarse llevar."},
+    s3_p:{fr:"De 20h30 à 23h30 : jeux, musique, rencontres. Il ne reste plus qu'à se laisser porter.",en:"From 8:30 to 11:30 pm: games, music, meeting people. All that’s left is to let yourself go with it.",de:"Von 20:30 bis 23:30 Uhr: Spiele, Musik, Begegnungen. Man muss sich nur treiben lassen.",it:"Dalle 20:30 alle 23:30: giochi, musica, incontri. Non resta che lasciarsi andare.",es:"De 20:30 a 23:30 h: juegos, música, encuentros. Solo queda dejarse llevar."},
 
     facts_h2:{fr:"Infos pratiques",en:"Practical info",de:"Praktische Infos",it:"Informazioni pratiche",es:"Información práctica"},
     facts_sub:{fr:"Pour la première soirée.",en:"For the first event.",de:"Für den ersten Abend.",it:"Per la prima serata.",es:"Para la primera velada."},
     f1_b:{fr:"30–40 ans",en:"Ages 30–40",de:"30–40 Jahre",it:"30–40 anni",es:"30–40 años"},
     f1_l:{fr:"Tranche d'âge",en:"Age group",de:"Altersgruppe",it:"Fascia d’età",es:"Franja de edad"},
-    f2_b:{fr:"20h–23h",en:"8–11 pm",de:"20–23 Uhr",it:"20–23",es:"20–23 h"},
+    f2_b:{fr:"20h30–23h30",en:"8:30–11:30 pm",de:"20:30–23:30 Uhr",it:"20:30–23:30",es:"20:30–23:30 h"},
     f2_l:{fr:"Horaire",en:"Time",de:"Uhrzeit",it:"Orario",es:"Horario"},
     f3_l:{fr:"Entrée (hors consos)",en:"Entry (drinks not included)",de:"Eintritt (ohne Getränke)",it:"Ingresso (bevande escluse)",es:"Entrada (bebidas aparte)"},
     f4_l:{fr:"Lieu communiqué à l'inscription",en:"Venue shared upon registration",de:"Ort wird bei der Anmeldung mitgeteilt",it:"Luogo comunicato all’iscrizione",es:"Lugar comunicado al inscribirse"},
 
-    insc_h2:{fr:"Je m'inscris pour connaître les dates des soirées",en:"Sign up to hear about upcoming event dates",de:"Anmelden, um die Termine der Abende zu erfahren",it:"Iscriviti per conoscere le date delle serate",es:"Inscríbete para conocer las fechas de las veladas"},
+    insc_h2:{fr:"Je m'inscris pour être averti des dates des soirées",en:"Sign up to be notified of upcoming event dates",de:"Anmelden, um über die Termine der Abende informiert zu werden",it:"Iscriviti per essere avvisato delle date delle serate",es:"Inscríbete para recibir aviso de las fechas de las veladas"},
+    insc_note:{fr:"Quand des soirées correspondant à votre profil (âge, sexe, orientation) seront programmées, vous recevrez un e-mail : vous pourrez alors vous inscrire à une soirée précise directement depuis cet e-mail. Le paiement se fait à ce moment-là.",en:"When events matching your profile (age, gender, orientation) are scheduled, you'll get an email: you can then sign up for a specific event straight from that email. Payment is made at that point.",de:"Sobald Abende passend zu Ihrem Profil (Alter, Geschlecht, Orientierung) geplant sind, erhalten Sie eine E-Mail: Sie können sich dann direkt über diese E-Mail für einen bestimmten Abend anmelden. Die Zahlung erfolgt dann.",it:"Quando saranno programmate serate adatte al tuo profilo (età, sesso, orientamento), riceverai un'email: potrai allora iscriverti a una serata specifica direttamente da quell'email. Il pagamento avviene in quel momento.",es:"Cuando se programen veladas que coincidan con tu perfil (edad, sexo, orientación), recibirás un correo: podrás entonces inscribirte a una velada concreta directamente desde ese correo. El pago se realiza en ese momento."},
     insc_sub:{fr:"Vous recevrez tout de suite un e-mail de confirmation. Pensez à regarder dans vos spams s'il n'arrive pas, et à ajouter contact@soireematch.com à vos contacts.",en:"You’ll receive a confirmation email right away. Do check your spam folder if it doesn’t arrive, and add contact@soireematch.com to your contacts.",de:"Sie erhalten sofort eine Bestätigungs-E-Mail. Schauen Sie bitte im Spam-Ordner nach, falls sie nicht ankommt, und fügen Sie contact@soireematch.com zu Ihren Kontakten hinzu.",it:"Riceverai subito un’email di conferma. Controlla nello spam se non arriva e aggiungi contact@soireematch.com ai tuoi contatti.",es:"Recibirás enseguida un correo de confirmación. Revisa el spam si no llega y añade contact@soireematch.com a tus contactos."},
     l_prenom:{fr:"Prénom",en:"First name",de:"Vorname",it:"Nome",es:"Nombre"},
     l_nom:{fr:"Nom",en:"Last name",de:"Nachname",it:"Cognome",es:"Apellido"},
