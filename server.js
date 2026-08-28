@@ -37,6 +37,13 @@ db.exec(`CREATE TABLE IF NOT EXISTS inscriptions(
   ip TEXT, ua TEXT
 )`);
 
+db.exec(`CREATE TABLE IF NOT EXISTS pageviews(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  day TEXT NOT NULL,
+  ref TEXT, lang TEXT, vhash TEXT
+)`);
+
 // ---------- E-mail (OVH Zimbra SMTP) ----------
 const MAIL_USER = process.env.MAIL_USER || '';
 const MAIL_PASS = process.env.MAIL_PASS || '';
@@ -302,6 +309,86 @@ function stats() {
   return { total, semaine, desinscrits, byGenre, byRech };
 }
 
+// ---------- Compteur de visites (sans cookies, IP anonymisée) ----------
+const BOT_RE = /bot|crawl|spider|slurp|bing|googlebot|yandex|baidu|duckduck|facebookexternalhit|embedly|quora|pinterest|preview|monitor|curl|wget|python-requests|axios|headless|lighthouse|uptime|semrush|ahrefs/i;
+function refCategory(referer) {
+  if (!referer) return 'Direct / QR';
+  try {
+    const h = new URL(referer).hostname.replace(/^www\./, '');
+    if (h.includes('soireematch')) return 'Direct / QR';
+    if (h.includes('google')) return 'Google';
+    if (h.includes('instagram')) return 'Instagram';
+    if (h.includes('facebook') || h.includes('fb.')) return 'Facebook';
+    if (h.includes('bing')) return 'Bing';
+    return h;
+  } catch { return 'Autre'; }
+}
+function langCategory(al) {
+  if (!al) return '—';
+  const c = al.split(',')[0].trim().slice(0, 2).toLowerCase();
+  return ({ fr: 'Français', en: 'Anglais', de: 'Allemand', it: 'Italien', es: 'Espagnol' })[c] || (c ? c.toUpperCase() : '—');
+}
+function trackVisit(req, ip) {
+  try {
+    const ua = req.headers['user-agent'] || '';
+    if (!ua || BOT_RE.test(ua)) return;
+    const now = new Date();
+    const day = now.toISOString().slice(0, 10);
+    const salt = day + (process.env.SESSION_SECRET || 'sm');
+    const vhash = crypto.createHash('sha256').update(ip + '|' + ua + '|' + salt).digest('hex').slice(0, 16);
+    const ref = refCategory(req.headers['referer'] || req.headers['referrer'] || '');
+    const lang = langCategory(req.headers['accept-language'] || '');
+    db.prepare('INSERT INTO pageviews(created_at,day,ref,lang,vhash) VALUES(?,?,?,?,?)').run(now.toISOString(), day, ref, lang, vhash);
+  } catch (e) { /* ne jamais casser la page pour une stat */ }
+}
+function visitStats() {
+  const one = (sql, ...a) => db.prepare(sql).get(...a).n;
+  const total = one('SELECT COUNT(*) n FROM pageviews');
+  const uniques = one('SELECT COUNT(DISTINCT vhash) n FROM pageviews');
+  const weekAgo = new Date(Date.now() - 7 * 864e5).toISOString();
+  const vues7 = one('SELECT COUNT(*) n FROM pageviews WHERE created_at>=?', weekAgo);
+  const uniq7 = one('SELECT COUNT(DISTINCT vhash) n FROM pageviews WHERE created_at>=?', weekAgo);
+  const since = new Date(Date.now() - 13 * 864e5).toISOString().slice(0, 10);
+  const perDay = db.prepare('SELECT day, COUNT(*) v, COUNT(DISTINCT vhash) u FROM pageviews WHERE day>=? GROUP BY day').all(since);
+  const byRef = db.prepare('SELECT ref, COUNT(*) n FROM pageviews GROUP BY ref ORDER BY n DESC').all();
+  const byLang = db.prepare('SELECT lang, COUNT(*) n FROM pageviews GROUP BY lang ORDER BY n DESC').all();
+  return { total, uniques, vues7, uniq7, perDay, byRef, byLang };
+}
+function buildVisitsPanel(v) {
+  const map = {}; v.perDay.forEach((r) => { map[r.day] = r; });
+  const days = [];
+  for (let i = 13; i >= 0; i--) days.push(new Date(Date.now() - i * 864e5).toISOString().slice(0, 10));
+  const maxv = Math.max(1, ...days.map((d) => (map[d] ? map[d].v : 0)));
+  const bw = 22, gap = 6, h = 70;
+  const bars = days.map((d, i) => {
+    const val = map[d] ? map[d].v : 0;
+    const bh = Math.round((val / maxv) * (h - 14));
+    const x = i * (bw + gap);
+    return `<g><rect x="${x}" y="${h - bh}" width="${bw}" height="${bh}" rx="3" fill="var(--accent)"></rect>`
+      + (val ? `<text x="${x + bw / 2}" y="${h - bh - 3}" text-anchor="middle" font-size="9" fill="#666">${val}</text>` : '')
+      + `<text x="${x + bw / 2}" y="${h + 11}" text-anchor="middle" font-size="8" fill="#999">${d.slice(8)}</text></g>`;
+  }).join('');
+  const chart = `<svg width="100%" viewBox="0 0 ${days.length * (bw + gap)} ${h + 16}" style="max-width:430px;display:block">${bars}</svg>`;
+  const li = (label, n) => `<div style="display:flex;justify-content:space-between;gap:16px;font-size:.85rem;padding:3px 0"><span>${esc(label)}</span><b>${n}</b></div>`;
+  const refTable = v.byRef.map((r) => li(r.ref || 'Autre', r.n)).join('') || '<div style="color:#999">—</div>';
+  const langTable = v.byLang.map((r) => li(r.lang || '—', r.n)).join('') || '<div style="color:#999">—</div>';
+  return `<div style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px">
+    <div style="font-weight:700;margin-bottom:10px">📊 Visites du site <span style="font-weight:400;color:#999;font-size:.8rem">— hors robots, sans cookies</span></div>
+    <div class=cards style="margin-bottom:10px">
+      <div class=card><div class=n>${v.total}</div><div class=l>Vues totales</div></div>
+      <div class=card><div class=n>${v.uniques}</div><div class=l>Visiteurs uniques</div></div>
+      <div class=card><div class=n>${v.vues7}</div><div class=l>Vues (7 j)</div></div>
+      <div class=card><div class=n>${v.uniq7}</div><div class=l>Uniques (7 j)</div></div>
+    </div>
+    <div style="font-size:.8rem;color:#666;margin-bottom:4px">Vues par jour (14 derniers jours)</div>
+    ${chart}
+    <div style="display:flex;gap:32px;flex-wrap:wrap;margin-top:12px">
+      <div style="min-width:180px"><div style="font-weight:600;font-size:.85rem;margin-bottom:4px;border-bottom:1px solid var(--line);padding-bottom:3px">Provenance</div>${refTable}</div>
+      <div style="min-width:180px"><div style="font-weight:600;font-size:.85rem;margin-bottom:4px;border-bottom:1px solid var(--line);padding-bottom:3px">Langue du navigateur</div>${langTable}</div>
+    </div>
+  </div>`;
+}
+
 // ---------- Static ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.webmanifest': 'application/manifest+json' };
@@ -396,6 +483,7 @@ function adminPage(query) {
       ${genreCards}
       <div class=card><div class=n>${s.desinscrits}</div><div class=l>Désinscrits</div></div>
     </div>
+    ${buildVisitsPanel(visitStats())}
     ${camp}
 
     <form class=filters method=get action=/admin>
@@ -732,6 +820,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (req.method === 'GET' && (p === '/' || p === '/index.html')) trackVisit(req, ip);
 
   // API publique : inscription
   if (p === '/api/inscription' && req.method === 'POST') {
