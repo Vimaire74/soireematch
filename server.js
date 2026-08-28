@@ -262,19 +262,22 @@ function resaCSV(rows) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let lastCampaign = null; // { at, total, sent, failed, running, subject }
 
-async function runCampaign(recipients, subject, body, linkUrl = SITE_URL) {
+async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null) {
   lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
+  const dateTxt = (so && so.date_texte) ? so.date_texte : '';
+  const lieuTxt = (so && so.lieu) ? so.lieu : '';
   for (const r of recipients) {
     const prenom = (r.prenom || '').trim() || 'à toi';
     const unsub = unsubLink(r.email);
     const resa = resaLink(r.email);
-    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa);
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateTxt).replace(/\{lieu\}/gi, lieuTxt);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
     const btn = `<a href="${resa}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Je réserve ma place</a>`;
     const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
+      .replace(/\{date\}/gi, esc(dateTxt)).replace(/\{lieu\}/gi, esc(lieuTxt))
       .replace(/\n/g, '<br>');
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:540px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55">`
       + htmlBody
@@ -291,10 +294,16 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL) {
 }
 
 // Destinataires (exclut les désinscrits) selon genre / recherche / "tous"
-function recipientsFor({ genre, recherche }) {
+function recipientsFor({ genre, recherche, tranche }) {
   let sql = 'SELECT prenom, email FROM inscriptions WHERE COALESCE(unsubscribed,0)=0', args = [];
   if (genre) { sql += ' AND genre=?'; args.push(genre); }
   if (recherche) { sql += ' AND recherche=?'; args.push(recherche); }
+  if (tranche && /^\d+-\d+$/.test(tranche)) {
+    const [lo, hi] = tranche.split('-').map(Number);
+    const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)";
+    sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} < ?`;
+    args.push(lo, hi);
+  }
   return db.prepare(sql).all(...args);
 }
 
@@ -671,7 +680,7 @@ function reservationsPage(s) {
 }
 
 // ---------- Modèles d'e-mails ----------
-const PRATIQUE = `📍 Bar Le Dancing, Boulevard des Roches 19, 1006 Lausanne
+const PRATIQUE = `📍 {lieu}
 🎟️ Entrée : 20 CHF
 
 Un petit mot qui compte : la salle nous est gentiment offerte par le bar. Alors on compte sur toi pour commander un verre ou deux et leur faire honneur — c'est aussi excellent pour le courage 😉. Les consommations sont à ta charge.
@@ -687,10 +696,10 @@ Ta team Soirée Match 💛`;
 const TEMPLATES = [
   {
     name: 'Général — prochaine soirée (tous)',
-    subject: '💛 La prochaine Soirée Match, c\'est le 10 août — tu viens ?',
+    subject: '💛 La prochaine Soirée Match, c\'est le {date} — tu viens ?',
     body: `Bonjour {prenom},
 
-Bonne nouvelle : la date de la prochaine Soirée Match est tombée ! On t'attend le 10 août à 20h30 au bar Le Dancing, à Lausanne.
+Bonne nouvelle : la date de la prochaine Soirée Match est tombée ! On t'attend le {date}.
 
 ${PRATIQUE}
 
@@ -698,10 +707,10 @@ ${SIGNOFF}`,
   },
   {
     name: 'Hommes → cherchent une femme',
-    subject: '{prenom}, et si c\'était le 10 août ?',
+    subject: '{prenom}, et si c\'était le {date} ?',
     body: `Bonjour {prenom},
 
-La prochaine Soirée Match approche, et c'est l'occasion rêvée de faire de belles rencontres en vrai. Des femmes intéressantes et bienveillantes seront présentes le 10 août à 20h30 au bar Le Dancing, à Lausanne — laisse les applis de côté et viens tenter ta chance. Pas besoin d'être un grand séducteur : nos jeux s'occupent de briser la glace pour toi, tu n'as qu'à venir avec le sourire.
+La prochaine Soirée Match approche, et c'est l'occasion rêvée de faire de belles rencontres en vrai. Des femmes intéressantes et bienveillantes seront présentes le {date} — laisse les applis de côté et viens tenter ta chance. Pas besoin d'être un grand séducteur : nos jeux s'occupent de briser la glace pour toi, tu n'as qu'à venir avec le sourire.
 
 ${PRATIQUE}
 
@@ -709,10 +718,10 @@ ${SIGNOFF}`,
   },
   {
     name: 'Femmes → cherchent un homme',
-    subject: '{prenom}, une soirée pensée pour de vraies rencontres — le 10 août',
+    subject: '{prenom}, une soirée pensée pour de vraies rencontres — le {date}',
     body: `Bonjour {prenom},
 
-On aimerait beaucoup te voir à la prochaine Soirée Match, le 10 août à 20h30 au bar Le Dancing, à Lausanne. On met un point d'honneur à créer un cadre respectueux et bienveillant, avec des hommes venus pour de vraies rencontres — et une soirée animée par un thérapeute pour que chacune se sente à l'aise. Tu viens comme tu es, on s'occupe du reste.
+On aimerait beaucoup te voir à la prochaine Soirée Match, le {date}. On met un point d'honneur à créer un cadre respectueux et bienveillant, avec des hommes venus pour de vraies rencontres — et une soirée animée par un thérapeute pour que chacune se sente à l'aise. Tu viens comme tu es, on s'occupe du reste.
 
 ${PRATIQUE}
 
@@ -720,10 +729,10 @@ ${SIGNOFF}`,
   },
   {
     name: 'Rencontres gay — entre hommes',
-    subject: '{prenom}, Soirée Match entre hommes : rendez-vous le 10 août',
+    subject: '{prenom}, Soirée Match entre hommes : rendez-vous le {date}',
     body: `Bonjour {prenom},
 
-La prochaine Soirée Match dédiée aux rencontres entre hommes arrive : le 10 août à 20h30 au bar Le Dancing, à Lausanne. Une soirée décontractée pour se rencontrer en vrai, rire et créer des liens — loin des applis et de leurs déceptions.
+La prochaine Soirée Match dédiée aux rencontres entre hommes arrive : le {date}. Une soirée décontractée pour se rencontrer en vrai, rire et créer des liens — loin des applis et de leurs déceptions.
 
 ${PRATIQUE}
 
@@ -731,10 +740,10 @@ ${SIGNOFF}`,
   },
   {
     name: 'Rencontres gay — entre femmes',
-    subject: '{prenom}, Soirée Match entre femmes : rendez-vous le 10 août',
+    subject: '{prenom}, Soirée Match entre femmes : rendez-vous le {date}',
     body: `Bonjour {prenom},
 
-La prochaine Soirée Match dédiée aux rencontres entre femmes arrive : le 10 août à 20h30 au bar Le Dancing, à Lausanne. Une soirée chaleureuse et bienveillante pour se rencontrer en vrai, échanger et faire de belles rencontres — sans applis, sans faux-semblants.
+La prochaine Soirée Match dédiée aux rencontres entre femmes arrive : le {date}. Une soirée chaleureuse et bienveillante pour se rencontrer en vrai, échanger et faire de belles rencontres — sans applis, sans faux-semblants.
 
 ${PRATIQUE}
 
@@ -763,6 +772,7 @@ function composePage() {
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <span>Genre <select name=genre><option value="">Tous</option>${['Femme', 'Homme', 'Non binaire'].map(opt).join('')}</select></span>
         <span>Intéressé(e) par <select name=recherche><option value="">Peu importe</option>${['Des hommes', 'Des femmes', 'Les deux'].map(opt).join('')}</select></span>
+        <span>Tranche d'âge <select name=tranche><option value="">Toutes</option>${['20-30', '30-40', '40-50', '50-60'].map((v) => `<option value="${v}">${v} ans</option>`).join('')}</select></span>
       </div>
       <p class=hint>Laisse « Tous » + « Peu importe » pour écrire à <b>tout le monde</b>. Repères : Femmes ${byG['Femme'] || 0} · Hommes ${byG['Homme'] || 0} · Non binaire ${byG['Non binaire'] || 0} — cherche : hommes ${byR['Des hommes'] || 0}, femmes ${byR['Des femmes'] || 0}, les deux ${byR['Les deux'] || 0}. (Les désinscrits sont exclus automatiquement.)</p>
 
@@ -773,7 +783,7 @@ function composePage() {
       <input id=subject name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
       <label>Message</label>
       <textarea id=body name=body rows=14 required placeholder="Bonjour {prenom},&#10;&#10;…"></textarea>
-      <p class=hint>Repères : <b>{prenom}</b> = le prénom de chacun · <b>{reserver}</b> = bouton personnalisé « Je réserve ma place » (chaque personne arrive sur une page qui lui montre <b>automatiquement les soirées qui la concernent</b> selon son âge, son sexe et qui elle cherche — réservation en un clic). <b>{lien}</b> = un lien fixe vers la soirée liée ci-dessus, ou le site. Un lien de désinscription est ajouté automatiquement en bas.</p>
+      <p class=hint>Repères : <b>{prenom}</b> = le prénom de chacun · <b>{reserver}</b> = bouton personnalisé « Je réserve ma place » (chaque personne arrive sur une page qui lui montre <b>automatiquement les soirées qui la concernent</b> selon son âge, son sexe et qui elle cherche — réservation en un clic). <b>{lien}</b> = un lien fixe vers la soirée liée ci-dessus, ou le site. <b>{date}</b> et <b>{lieu}</b> = la date et le lieu de la soirée liée (se remplissent tout seuls). Un lien de désinscription est ajouté automatiquement en bas.</p>
       <div style="margin-top:14px"><button ${off ? 'disabled' : ''}>Envoyer</button></div>
     </form>
   </div>
@@ -972,12 +982,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/admin/send' && req.method === 'POST') {
       const d = parseForm(await readBody(req));
       const subject = (d.subject || '').trim(), body = (d.body || '').trim();
-      const genre = (d.genre || '').trim(), recherche = (d.recherche || '').trim();
+      const genre = (d.genre || '').trim(), recherche = (d.recherche || '').trim(), tranche = (d.tranche || '').trim();
       if (!transporter || !subject || !body) return send(res, 302, '', { Location: '/admin/compose' });
       const so = (d.soiree || '').trim() ? getSoiree((d.soiree || '').trim()) : null;
       const linkUrl = so ? soireeLink(so.code) : SITE_URL;
-      const recips = recipientsFor({ genre, recherche });
-      runCampaign(recips, subject, body, linkUrl);   // en arrière-plan (non bloquant)
+      const recips = recipientsFor({ genre, recherche, tranche });
+      runCampaign(recips, subject, body, linkUrl, so);   // en arrière-plan (non bloquant)
       return send(res, 302, '', { Location: '/admin' });
     }
 
