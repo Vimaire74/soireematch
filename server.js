@@ -187,6 +187,9 @@ try { db.exec('ALTER TABLE inscriptions ADD COLUMN unsubscribed INTEGER DEFAULT 
 try { db.exec('ALTER TABLE inscriptions ADD COLUMN langues TEXT'); } catch { /* colonne déjà présente */ }
 
 const SITE_URL = (process.env.SITE_URL || cfg.siteUrl || 'https://soireematch.com').replace(/\/+$/, '');
+const STRIPE_SECRET = process.env.STRIPE_SECRET_KEY || '';
+const STRIPE_WH_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
+const PAY_ON = !!STRIPE_SECRET;
 const unsubToken = (email) => crypto.createHmac('sha256', SECRET).update('unsub:' + String(email).toLowerCase()).digest('base64url');
 const unsubLink = (email) => `${SITE_URL}/unsub?e=${encodeURIComponent(email)}&t=${unsubToken(email)}`;
 
@@ -200,6 +203,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS reservations(
   created_at TEXT, paid INTEGER DEFAULT 0)`);
 try { db.exec('ALTER TABLE soirees ADD COLUMN tranche TEXT'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN type TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE reservations ADD COLUMN stripe_session TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE reservations ADD COLUMN amount INTEGER'); } catch { /* déjà là */ }
 
 const getSoiree = (code) => db.prepare('SELECT * FROM soirees WHERE code=?').get(code);
 const getSoireeById = (id) => db.prepare('SELECT * FROM soirees WHERE id=?').get(id);
@@ -210,6 +215,96 @@ const TYPES = ['Hétéro', 'Gay hommes', 'Gay femmes'];
 const TRANCHES = ['30-40', '40-50', '50-60'];
 const resaToken = (email) => crypto.createHmac('sha256', SECRET).update('resa:' + String(email).toLowerCase()).digest('base64url');
 const resaLink = (email) => `${SITE_URL}/reserver?e=${encodeURIComponent(email)}&t=${resaToken(email)}`;
+
+// ---------- Paiement Stripe (actif uniquement si STRIPE_SECRET_KEY est défini) ----------
+function priceRappen(so) {
+  const m = String((so && so.prix) || '').replace(',', '.').match(/(\d+(?:\.\d+)?)/);
+  const chf = m ? parseFloat(m[1]) : 20;
+  return Math.round((chf > 0 ? chf : 20) * 100);
+}
+function stripeApi(method, apiPath, params) {
+  return new Promise((resolve, reject) => {
+    const body = params ? new URLSearchParams(params).toString() : '';
+    const rq = require('node:https').request({
+      hostname: 'api.stripe.com', path: apiPath, method,
+      headers: { Authorization: 'Bearer ' + STRIPE_SECRET, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) },
+    }, (resp) => {
+      let data = '';
+      resp.on('data', (c) => { data += c; });
+      resp.on('end', () => {
+        let j = null; try { j = JSON.parse(data); } catch {}
+        if (resp.statusCode >= 400) reject(new Error((j && j.error && j.error.message) || ('Stripe ' + resp.statusCode)));
+        else resolve(j);
+      });
+    });
+    rq.on('error', reject);
+    if (body) rq.write(body);
+    rq.end();
+  });
+}
+async function createCheckout(resaId, so, email) {
+  const amount = priceRappen(so);
+  const params = {
+    mode: 'payment',
+    'payment_method_types[0]': 'card',
+    'payment_method_types[1]': 'twint',
+    'line_items[0][quantity]': '1',
+    'line_items[0][price_data][currency]': 'chf',
+    'line_items[0][price_data][unit_amount]': String(amount),
+    'line_items[0][price_data][product_data][name]': `Soirée Match — ${so.date_texte || so.code}`,
+    customer_email: email,
+    locale: 'fr',
+    client_reference_id: String(resaId),
+    'metadata[rid]': String(resaId),
+    'metadata[soiree]': so.code,
+    success_url: `${SITE_URL}/paiement/ok?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${SITE_URL}/paiement/annule?rid=${resaId}`,
+  };
+  const sess = await stripeApi('POST', '/v1/checkout/sessions', params);
+  db.prepare('UPDATE reservations SET stripe_session=?, amount=? WHERE id=?').run(sess.id, amount, resaId);
+  return sess.url;
+}
+function markPaidAndConfirm(resa) {
+  if (!resa || resa.paid) return;
+  db.prepare('UPDATE reservations SET paid=1 WHERE id=?').run(resa.id);
+  const so = getSoireeById(resa.soiree_id);
+  if (so) sendReservationMail(so, { prenom: resa.prenom, nom: resa.nom, email: resa.email });
+}
+function verifyStripeSig(payload, header, secret) {
+  try {
+    const parts = {}; String(header || '').split(',').forEach((kv) => { const i = kv.indexOf('='); if (i > 0) parts[kv.slice(0, i)] = kv.slice(i + 1); });
+    if (!parts.t || !parts.v1) return false;
+    const expected = crypto.createHmac('sha256', secret).update(parts.t + '.' + payload).digest('hex');
+    return parts.v1.length === expected.length && crypto.timingSafeEqual(Buffer.from(parts.v1), Buffer.from(expected));
+  } catch { return false; }
+}
+async function startReservation(res, so, person) {
+  const email = person.email;
+  const paidDup = db.prepare('SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND paid=1').get(so.id, email);
+  if (paidDup) return send(res, 200, pubMsg('Déjà réservé', 'Ta place pour cette soirée est déjà confirmée. À très vite ! 💛'));
+  if (!PAY_ON) {
+    const dup = db.prepare('SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?)').get(so.id, email);
+    if (!dup) {
+      db.prepare(`INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, person.genre, person.recherche, new Date().toISOString());
+      sendReservationMail(so, person);
+    }
+    return send(res, 200, soireeOkPage(so));
+  }
+  let resa = db.prepare('SELECT * FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND COALESCE(paid,0)=0').get(so.id, email);
+  if (!resa) {
+    const info = db.prepare(`INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,paid) VALUES(?,?,?,?,?,?,?,?,?,0)`)
+      .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, person.genre, person.recherche, new Date().toISOString());
+    resa = { id: Number(info.lastInsertRowid) };
+  }
+  try {
+    const link = await createCheckout(resa.id, so, email);
+    return send(res, 302, '', { Location: link });
+  } catch (e) {
+    console.error('Stripe checkout échoué:', e.message);
+    return send(res, 200, pubMsg('Paiement momentanément indisponible', 'Réessaie dans un instant, ou écris-nous à contact@soireematch.com.'));
+  }
+}
 const ageOf = (annee) => new Date().getFullYear() - Number(annee);
 
 function allowedTypes(genre, recherche) {
@@ -458,12 +553,13 @@ function loginPage(err) {
 
 function adminPage(query) {
   const q = (query.q || '').trim();
-  const fg = query.genre || '', fr = query.recherche || '', fl = query.langue || '';
+  const fg = query.genre || '', fr = query.recherche || '', fl = query.langue || '', ft = query.tranche || '';
   let sql = 'SELECT * FROM inscriptions WHERE 1=1', args = [];
   if (q) { sql += ' AND (prenom LIKE ? OR nom LIKE ? OR email LIKE ?)'; const l = `%${q}%`; args.push(l, l, l); }
   if (fg) { sql += ' AND genre = ?'; args.push(fg); }
   if (fr) { sql += ' AND recherche = ?'; args.push(fr); }
   if (fl) { sql += ' AND langues LIKE ?'; args.push(`%${fl}%`); }
+  if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} < ?`; args.push(lo, hi); }
   sql += ' ORDER BY id DESC';
   const rows = db.prepare(sql).all(...args);
   const s = stats();
@@ -500,6 +596,7 @@ function adminPage(query) {
       <select name=genre><option value="">Tous genres</option>${['Femme', 'Homme', 'Non binaire'].map((v) => opt(v, fg)).join('')}</select>
       <select name=recherche><option value="">Toutes recherches</option>${['Des hommes', 'Des femmes', 'Les deux'].map((v) => opt(v, fr)).join('')}</select>
       <select name=langue><option value="">Toutes langues</option>${['Français', 'Anglais', 'Espagnol', 'Allemand', 'Italien'].map((v) => opt(v, fl)).join('')}</select>
+      <select name=tranche><option value="">Tous âges</option>${['20-30', '30-40', '40-50', '50-60'].map((v) => `<option value="${v}"${v === ft ? ' selected' : ''}>${v} ans</option>`).join('')}</select>
       <button>Filtrer</button>
       <a href=/admin><button type=button class=sec>Réinitialiser</button></a>
     </form>
@@ -508,7 +605,7 @@ function adminPage(query) {
     <div class=bar>
       <a href="/admin/compose"><button type=button>✉ Écrire aux inscrits</button></a>
       <button form=act formaction=/admin/export>⬇ Exporter la sélection (CSV)</button>
-      <a href="/admin/export?all=1${q || fg || fr || fl ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) + '&langue=' + encodeURIComponent(fl) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
+      <a href="/admin/export?all=1${q || fg || fr || fl || ft ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) + '&langue=' + encodeURIComponent(fl) + '&tranche=' + encodeURIComponent(ft) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
       <button form=act formaction=/admin/delete class=danger onclick="return confirm('Supprimer les inscriptions sélectionnées ?')">🗑 Supprimer la sélection</button>
     </div>
 
@@ -662,19 +759,19 @@ function soireeEditPage(s) {
 function reservationsPage(s) {
   const list = db.prepare('SELECT * FROM reservations WHERE soiree_id=? ORDER BY id DESC').all(s.id);
   const g = {}; list.forEach((r) => { g[r.genre] = (g[r.genre] || 0) + 1; });
-  const rows = list.map((r) => `<tr><td>${esc(r.created_at.slice(0, 10))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.tel)}</td><td>${esc(r.annee)}</td><td>${esc(r.genre)}</td><td>${esc(r.recherche)}</td></tr>`).join('');
+  const rows = list.map((r) => `<tr><td>${esc(r.created_at.slice(0, 10))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.tel)}</td><td>${esc(r.annee)}</td><td>${esc(r.genre)}</td><td>${esc(r.recherche)}</td><td style="text-align:center">${!PAY_ON ? '—' : (r.paid ? '✅' : '⏳')}</td></tr>`).join('');
   return `${pageHead('Réservations')}
   <div class=wrap>
     <a class=back href="/admin/soirees">← Retour aux soirées</a>
     <h2>Réservations — ${esc(s.date_texte || s.code)}</h2>
     <div class=cards>
-      <div class=card><div class=n>${list.length}</div><div class=l>Total</div></div>
+      <div class=card><div class=n>${list.length}</div><div class=l>Total</div></div>${PAY_ON ? `<div class=card><div class=n>${list.filter((r) => r.paid).length}</div><div class=l>Payées</div></div>` : ''}
       <div class=card><div class=n>${g['Femme'] || 0}</div><div class=l>Femmes</div></div>
       <div class=card><div class=n>${g['Homme'] || 0}</div><div class=l>Hommes</div></div>
       <div class=card><div class=n>${g['Non binaire'] || 0}</div><div class=l>Non binaire</div></div>
     </div>
     <div class=bar><a href="/admin/soirees/reservations/export?id=${s.id}"><button type=button>⬇ Exporter (CSV)</button></a></div>
-    ${list.length ? `<table><tr><th>Date</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Tél</th><th>Année</th><th>Genre</th><th>Recherche</th></tr>${rows}</table>`
+    ${list.length ? `<table><tr><th>Date</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Tél</th><th>Année</th><th>Genre</th><th>Recherche</th><th>Payé</th></tr>${rows}</table>`
       : `<div class=empty>Aucune réservation pour l'instant.</div>`}
   </div></html>`;
 }
@@ -890,10 +987,7 @@ const server = http.createServer(async (req, res) => {
           !(annee >= 1930 && annee <= new Date().getFullYear()) || !genre || !recherche || !consent) {
         return send(res, 200, soireePage(so, 'Merci de remplir tous les champs correctement et de cocher le consentement.'));
       }
-      db.prepare(`INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?)`).run(so.id, prenom, nom, email, tel, annee, genre, recherche, new Date().toISOString());
-      sendReservationMail(so, { prenom, nom, email });   // non bloquant
-      return send(res, 200, soireeOkPage(so));
+      return startReservation(res, so, { prenom, nom, email, tel, annee, genre, recherche });
     }
   }
 
@@ -915,13 +1009,36 @@ const server = http.createServer(async (req, res) => {
     const person = valid ? db.prepare('SELECT * FROM inscriptions WHERE lower(email)=lower(?)').get(email) : null;
     const so = getSoireeById(Number(d.soiree));
     if (!person || !so) return send(res, 200, pubMsg('Oups', 'Réservation impossible. Réessaie depuis le lien de ton e-mail.'));
-    const dup = db.prepare('SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?)').get(so.id, email);
-    if (!dup) {
-      db.prepare(`INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?)`).run(so.id, person.prenom, person.nom, person.email, person.tel, person.annee, person.genre, person.recherche, new Date().toISOString());
-      sendReservationMail(so, { prenom: person.prenom, nom: person.nom, email: person.email });
+    return startReservation(res, so, { prenom: person.prenom, nom: person.nom, email: person.email, tel: person.tel, annee: person.annee, genre: person.genre, recherche: person.recherche });
+  }
+
+  // Paiement Stripe — retour succès / annulation + webhook
+  if (p === '/paiement/ok' && req.method === 'GET') {
+    const sid = url.searchParams.get('session_id') || '';
+    if (sid && PAY_ON) {
+      try {
+        const sess = await stripeApi('GET', '/v1/checkout/sessions/' + encodeURIComponent(sid), null);
+        if (sess && sess.payment_status === 'paid') {
+          const resa = db.prepare('SELECT * FROM reservations WHERE stripe_session=?').get(sid);
+          if (resa) { markPaidAndConfirm(resa); return send(res, 200, soireeOkPage(getSoireeById(resa.soiree_id) || {})); }
+        }
+      } catch (e) { console.error('Vérif paiement échouée:', e.message); }
     }
-    return send(res, 200, soireeOkPage(so));
+    return send(res, 200, pubMsg('Paiement en cours de confirmation', 'Merci ! Ton paiement est en cours de validation. Tu recevras un e-mail dès que ta place est confirmée.'));
+  }
+  if (p === '/paiement/annule' && req.method === 'GET') {
+    return send(res, 200, pubMsg('Paiement annulé', 'Ta place n\'a pas été confirmée (paiement annulé). Tu peux réessayer depuis le lien de ton e-mail.'));
+  }
+  if (p === '/api/stripe/webhook' && req.method === 'POST') {
+    const raw = await readBody(req);
+    if (STRIPE_WH_SECRET && !verifyStripeSig(raw, req.headers['stripe-signature'] || '', STRIPE_WH_SECRET)) return send(res, 400, 'signature invalide');
+    let ev = null; try { ev = JSON.parse(raw); } catch {}
+    if (ev && ev.type === 'checkout.session.completed') {
+      const sid = ev.data && ev.data.object && ev.data.object.id;
+      const resa = sid ? db.prepare('SELECT * FROM reservations WHERE stripe_session=?').get(sid) : null;
+      if (resa) markPaidAndConfirm(resa);
+    }
+    return send(res, 200, 'ok');
   }
 
   // Admin — login
@@ -947,12 +1064,13 @@ const server = http.createServer(async (req, res) => {
     if (p === '/admin/export') {
       let rows;
       if (url.searchParams.get('all')) {
-        const q = url.searchParams.get('q') || '', fg = url.searchParams.get('genre') || '', fr = url.searchParams.get('recherche') || '', fl = url.searchParams.get('langue') || '';
+        const q = url.searchParams.get('q') || '', fg = url.searchParams.get('genre') || '', fr = url.searchParams.get('recherche') || '', fl = url.searchParams.get('langue') || '', ft = url.searchParams.get('tranche') || '';
         let sql = 'SELECT * FROM inscriptions WHERE 1=1', args = [];
         if (q) { sql += ' AND (prenom LIKE ? OR nom LIKE ? OR email LIKE ?)'; const l = `%${q}%`; args.push(l, l, l); }
         if (fg) { sql += ' AND genre=?'; args.push(fg); }
         if (fr) { sql += ' AND recherche=?'; args.push(fr); }
         if (fl) { sql += ' AND langues LIKE ?'; args.push(`%${fl}%`); }
+        if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} < ?`; args.push(lo, hi); }
         sql += ' ORDER BY id DESC';
         rows = db.prepare(sql).all(...args);
       } else {
