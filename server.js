@@ -257,6 +257,7 @@ async function createCheckout(resaId, so, email) {
     client_reference_id: String(resaId),
     'metadata[rid]': String(resaId),
     'metadata[soiree]': so.code,
+    'payment_intent_data[statement_descriptor_suffix]': 'SoireeMatch',
     success_url: `${SITE_URL}/paiement/ok?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${SITE_URL}/paiement/annule?rid=${resaId}`,
   };
