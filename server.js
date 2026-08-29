@@ -246,8 +246,7 @@ async function createCheckout(resaId, so, email) {
   const amount = priceRappen(so);
   const params = {
     mode: 'payment',
-    'payment_method_types[0]': 'card',
-    'payment_method_types[1]': 'twint',
+    'automatic_payment_methods[enabled]': 'true',
     'line_items[0][quantity]': '1',
     'line_items[0][price_data][currency]': 'chf',
     'line_items[0][price_data][unit_amount]': String(amount),
@@ -257,7 +256,6 @@ async function createCheckout(resaId, so, email) {
     client_reference_id: String(resaId),
     'metadata[rid]': String(resaId),
     'metadata[soiree]': so.code,
-    'payment_intent_data[statement_descriptor_suffix]': 'SoireeMatch',
     success_url: `${SITE_URL}/paiement/ok?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${SITE_URL}/paiement/annule?rid=${resaId}`,
   };
