@@ -215,6 +215,7 @@ const TYPES = ['Hétéro', 'Gay hommes', 'Gay femmes'];
 const TRANCHES = ['30-40', '40-50', '50-60'];
 const resaToken = (email) => crypto.createHmac('sha256', SECRET).update('resa:' + String(email).toLowerCase()).digest('base64url');
 const resaLink = (email) => `${SITE_URL}/reserver?e=${encodeURIComponent(email)}&t=${resaToken(email)}`;
+const resaLinkSoiree = (email, code) => `${SITE_URL}/reserver?e=${encodeURIComponent(email)}&t=${resaToken(email)}&s=${encodeURIComponent(code)}`;
 
 // ---------- Paiement Stripe (actif uniquement si STRIPE_SECRET_KEY est défini) ----------
 function priceRappen(so) {
@@ -334,6 +335,19 @@ function matchingSoirees(person) {
   return db.prepare('SELECT * FROM soirees WHERE actif=1 ORDER BY id DESC').all()
     .filter((s) => (!s.type || types.includes(s.type)) && trancheOk(s.tranche, age));
 }
+function eligibleForSoiree(person, so) {
+  const types = allowedTypes(person.genre, person.recherche);
+  if (!types.length) return false;
+  if (so.type && !types.includes(so.type)) return false;
+  return trancheOk(so.tranche, ageOf(person.annee));
+}
+function soireeAudience(so) {
+  const t = { 'Hétéro': 'hétéro', 'Gay hommes': 'entre hommes', 'Gay femmes': 'entre femmes' }[so.type] || (so.type || '');
+  const parts = [];
+  if (so.tranche) parts.push(`${so.tranche} ans (souplesse ±3)`);
+  if (t) parts.push(t);
+  return parts.length ? 'réservée aux ' + parts.join(' · ') : 'réservée à un autre profil';
+}
 
 function sendReservationMail(so, i) {
   if (!transporter) return;
@@ -342,7 +356,7 @@ function sendReservationMail(so, i) {
   transporter.sendMail({
     from: MAIL_FROM, to: i.email,
     subject: `Ta réservation Soirée Match${so.date_texte ? ` — ${so.date_texte}` : ''} est confirmée 🎉`,
-    text: `Bonjour ${prenom},\n\nTa place pour la Soirée Match${quand} est bien réservée !\n${so.lieu ? `\nLieu : ${so.lieu}` : ''}${so.prix ? `\nEntrée : ${so.prix}` : ''}\n\nUn petit mot qui compte : la salle nous est offerte par le bar, alors pense à consommer un verre ou deux pour les remercier.\n\nOn a hâte de te voir. À très vite !\nTa team Soirée Match 💛`,
+    text: `Bonjour ${prenom},\n\nTa place pour la Soirée Match${quand} est bien réservée !\n${so.lieu ? `\nLieu : ${so.lieu}` : ''}${so.prix ? `\nEntrée : ${so.prix}` : ''}\n\nUn petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !\n\nOn a hâte de te voir. À très vite !\nTa team Soirée Match 💛`,
   }).catch((e) => console.error('Mail réservation échoué:', e.message));
   if (NOTIFY_TO) transporter.sendMail({ from: MAIL_FROM, to: NOTIFY_TO, subject: `Réservation « ${so.code} » : ${i.prenom || ''} ${i.nom || ''}`, text: `Nouvelle réservation pour ${so.code} (${so.date_texte || ''})\n${i.prenom || ''} ${i.nom || ''} — ${i.email || ''}` }).catch(() => {});
 }
@@ -359,11 +373,24 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
   lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
   const dateTxt = (so && so.date_texte) ? so.date_texte : '';
   const lieuTxt = (so && so.lieu) ? so.lieu : '';
+  const allSoirees = db.prepare('SELECT * FROM soirees WHERE actif=1 ORDER BY id DESC').all();
   for (const r of recipients) {
     const prenom = (r.prenom || '').trim() || 'à toi';
     const unsub = unsubLink(r.email);
     const resa = resaLink(r.email);
-    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateTxt).replace(/\{lieu\}/gi, lieuTxt);
+    const sT = allSoirees.map((so2) => {
+      const label = `${so2.date_texte || so2.code}${so2.lieu ? ' — ' + so2.lieu : ''}`;
+      return eligibleForSoiree(r, so2)
+        ? `• ${label}\n  👉 Réserver : ${resaLinkSoiree(r.email, so2.code)}`
+        : `• ${label} — ${soireeAudience(so2)}`;
+    }).join('\n\n');
+    const sH = allSoirees.map((so2) => {
+      const label = esc(`${so2.date_texte || so2.code}${so2.lieu ? ' — ' + so2.lieu : ''}`);
+      return eligibleForSoiree(r, so2)
+        ? `<div style="margin:10px 0"><b>${label}</b> — <a href="${resaLinkSoiree(r.email, so2.code)}" style="color:#2f7d8a;font-weight:600">Réserver ma place</a></div>`
+        : `<div style="margin:10px 0;color:#8a9a99">${label} — ${esc(soireeAudience(so2))}</div>`;
+    }).join('');
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateTxt).replace(/\{lieu\}/gi, lieuTxt).replace(/\{soirees\}/gi, sT);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
     const btn = `<a href="${resa}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Je réserve ma place</a>`;
@@ -371,6 +398,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
       .replace(/\{date\}/gi, esc(dateTxt)).replace(/\{lieu\}/gi, esc(lieuTxt))
+      .replace(/\{soirees\}/gi, sH)
       .replace(/\n/g, '<br>');
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:540px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55">`
       + htmlBody
@@ -388,7 +416,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
 
 // Destinataires (exclut les désinscrits) selon genre / recherche / "tous"
 function recipientsFor({ genre, recherche, tranche }) {
-  let sql = 'SELECT prenom, email FROM inscriptions WHERE COALESCE(unsubscribed,0)=0', args = [];
+  let sql = 'SELECT prenom, email, genre, recherche, annee, langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0', args = [];
   if (genre) { sql += ' AND genre=?'; args.push(genre); }
   if (recherche) { sql += ' AND recherche=?'; args.push(recherche); }
   if (tranche && /^\d+-\d+$/.test(tranche)) {
@@ -873,12 +901,15 @@ function composePage() {
 
       <label>Soirée liée <span class=hint>(le {lien} du message pointera vers sa page de réservation)</span></label>
       <select name=soiree><option value="">— Aucune (le lien mène au site ${esc(SITE_URL)}) —</option>${soirees.map((s) => `<option value="${esc(s.code)}">${esc(s.date_texte || s.code)} (${esc(s.code)})</option>`).join('')}</select>
+      <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=auto checked> Envoyer uniquement aux personnes concernées par la soirée liée (âge ±3, sexe, orientation)</label>
 
       <label>Objet</label>
       <input id=subject name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
       <label>Message</label>
       <textarea id=body name=body rows=14 required placeholder="Bonjour {prenom},&#10;&#10;…"></textarea>
-      <p class=hint>Repères : <b>{prenom}</b> = le prénom de chacun · <b>{reserver}</b> = bouton personnalisé « Je réserve ma place » (chaque personne arrive sur une page qui lui montre <b>automatiquement les soirées qui la concernent</b> selon son âge, son sexe et qui elle cherche — réservation en un clic). <b>{lien}</b> = un lien fixe vers la soirée liée ci-dessus, ou le site. <b>{date}</b> et <b>{lieu}</b> = la date et le lieu de la soirée liée (se remplissent tout seuls). Un lien de désinscription est ajouté automatiquement en bas.</p>
+      <p class=hint>Repères : <b>{prenom}</b> = le prénom de chacun · <b>{reserver}</b> = bouton personnalisé « Je réserve ma place » (chaque personne arrive sur une page qui lui montre <b>automatiquement les soirées qui la concernent</b> selon son âge, son sexe et qui elle cherche — réservation en un clic). <b>{lien}</b> = un lien fixe vers la soirée liée ci-dessus, ou le site. <b>{date}</b> et <b>{lieu}</b> = la date et le lieu de la soirée liée (se remplissent tout seuls). <b>{soirees}</b> = la liste de toutes les soirées à venir, avec un lien « Réserver » uniquement pour celles qui concernent la personne (les autres affichées sans lien). Un lien de désinscription est ajouté automatiquement en bas.</p>
+      <label>Adresse de test <span class=hint>(si rempli, l'e-mail part UNIQUEMENT à cette adresse — pour te tester toi-même)</span></label>
+      <input name=test_email type=email placeholder="ex. marc@guerir.ch" style="width:100%">
       <div style="margin-top:14px"><button ${off ? 'disabled' : ''}>Envoyer</button></div>
     </form>
   </div>
@@ -997,6 +1028,11 @@ const server = http.createServer(async (req, res) => {
     const valid = !!good && t.length === good.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(good));
     const person = valid ? db.prepare('SELECT * FROM inscriptions WHERE lower(email)=lower(?)').get(email) : null;
     if (!person) return send(res, 200, pubMsg('Lien invalide', 'Ce lien de réservation n\'est plus valide. Inscris-toi sur soireematch.com.'));
+    const sCode = (url.searchParams.get('s') || '').trim();
+    if (sCode) {
+      const soS = getSoiree(sCode);
+      if (soS && soS.actif && eligibleForSoiree(person, soS)) return startReservation(res, soS, person);
+    }
     return send(res, 200, choisirPage(person));
   }
   if (p === '/reserver/confirm' && req.method === 'POST') {
@@ -1102,7 +1138,17 @@ const server = http.createServer(async (req, res) => {
       if (!transporter || !subject || !body) return send(res, 302, '', { Location: '/admin/compose' });
       const so = (d.soiree || '').trim() ? getSoiree((d.soiree || '').trim()) : null;
       const linkUrl = so ? soireeLink(so.code) : SITE_URL;
-      const recips = recipientsFor({ genre, recherche, tranche });
+      const auto = (d.auto === 'on' || d.auto === '1');
+      const testEmail = (d.test_email || '').trim();
+      let recips;
+      if (testEmail) {
+        const row = db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE lower(email)=lower(?)').get(testEmail);
+        recips = [row || { prenom: 'Test', email: testEmail, genre: '', recherche: '', annee: 0, langues: '' }];
+      } else if (auto && so) {
+        recips = db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0').all().filter((p) => eligibleForSoiree(p, so));
+      } else {
+        recips = recipientsFor({ genre, recherche, tranche });
+      }
       runCampaign(recips, subject, body, linkUrl, so);   // en arrière-plan (non bloquant)
       return send(res, 302, '', { Location: '/admin' });
     }
