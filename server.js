@@ -408,7 +408,7 @@ function resaCSV(rows) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let lastCampaign = null; // { at, total, sent, failed, running, subject }
 
-async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null, soireesForList = null) {
+async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null, soireesForList = null, forceEligible = false) {
   lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
   const dateTxt = (so && so.date_texte) ? so.date_texte : '';
   const lieuTxt = (so && so.lieu) ? so.lieu : '';
@@ -418,7 +418,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const prenom = (r.prenom || '').trim() || 'à toi';
     const unsub = unsubLink(r.email);
     const resa = resaLink(r.email);
-    const eligibles = allSoirees.filter((so2) => eligibleForSoiree(r, so2));
+    const eligibles = forceEligible ? allSoirees : allSoirees.filter((so2) => eligibleForSoiree(r, so2));
     const aucune = "Aucune date ne correspond à ton profil pour le moment — on t'écrit dès qu'une nouvelle soirée s'ouvre pour toi.";
     const sT = eligibles.length
       ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${so2.lieu ? ' — ' + so2.lieu : ''}\n  👉 Réserver : ${resaLinkSoiree(r.email, so2.code)}`).join('\n\n')
@@ -1063,8 +1063,11 @@ function testComposePage(done) {
     <form class=panel method=post action=/admin/test/send onsubmit="return confirm('Envoyer ce test à cette seule adresse ?')">
       <label>Modèle</label>
       <select id=tpl><option value="-1">— Partir d'un modèle… —</option>${TEMPLATES.map((t, i) => `<option value=${i}>${esc(t.name)}</option>`).join('')}</select>
-      <label>Soirée liée <span class=hint>(pour {lien}, {date}, {lieu}, {reserver}, {soirees})</span></label>
-      <select name=soiree><option value="">— Aucune —</option>${soirees.map((so2) => `<option value="${esc(so2.code)}">${esc(so2.date_texte || so2.code)} (${esc(so2.code)})</option>`).join('')}</select>
+      <label>Soirées à inclure <span class=hint>(coche une ou plusieurs — pour {soirees} ; une seule pour {lien}/{date}/{lieu})</span></label>
+      <div style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto;border:1px solid #ddd;border-radius:8px;padding:10px">
+        ${soirees.length ? soirees.map((so2) => `<label style="display:flex;align-items:center;gap:8px;font-weight:400"><input type=checkbox name=soirees value="${esc(so2.code)}"> ${esc(so2.date_texte || so2.code)} (${esc(so2.code)})</label>`).join('') : '<span class=hint>Aucune soirée active.</span>'}
+      </div>
+      <p class=hint>Pour ce test, les soirées cochées s'affichent toujours (même si ton adresse n'est pas inscrite) afin que tu voies le rendu. Les liens « Réserver » ne fonctionnent que si l'adresse de test est un inscrit.</p>
       <label>Objet</label>
       <input id=subject name=subject required style="width:100%">
       <label>Message</label>
@@ -1550,11 +1553,14 @@ const server = http.createServer(async (req, res) => {
       const subject = (d.subject || '').trim(), body = (d.body || '').trim();
       const testEmail = (d.test_email || '').trim();
       if (!transporter || !subject || !body || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(testEmail)) return send(res, 302, '', { Location: '/admin/test' });
-      const so = (d.soiree || '').trim() ? getSoiree((d.soiree || '').trim()) : null;
+      let codes = d.soirees || [];
+      if (!Array.isArray(codes)) codes = [codes];
+      const selected = codes.map((c) => getSoiree(String(c).trim())).filter(Boolean);
+      const so = selected.length === 1 ? selected[0] : null;
       const linkUrl = so ? soireeLink(so.code) : SITE_URL;
       const row = db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE lower(email)=lower(?)').get(testEmail);
       const recips = [row || { prenom: 'Test', email: testEmail, genre: '', recherche: '', annee: 0, langues: '' }];
-      runCampaign(recips, subject, body, linkUrl, so);
+      runCampaign(recips, subject, body, linkUrl, so, selected, true);   // true = afficher les soirées cochées (aperçu)
       return send(res, 302, '', { Location: '/admin/test?done=' + encodeURIComponent(testEmail) });
     }
 
