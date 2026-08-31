@@ -207,7 +207,7 @@ try { db.exec('ALTER TABLE reservations ADD COLUMN stripe_session TEXT'); } catc
 try { db.exec('ALTER TABLE reservations ADD COLUMN amount INTEGER'); } catch { /* déjà là */ }
 // Parité / liste d'attente (Option A)
 try { db.exec('ALTER TABLE soirees ADD COLUMN cap_sexe INTEGER DEFAULT 15'); } catch { /* déjà là */ }
-try { db.exec('ALTER TABLE soirees ADD COLUMN min_sexe INTEGER DEFAULT 10'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN min_sexe INTEGER DEFAULT 8'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN cap_total INTEGER DEFAULT 30'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN min_total INTEGER DEFAULT 10'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN date_start TEXT'); } catch { /* déjà là */ }
@@ -226,7 +226,7 @@ const soireeLink = (code) => `${SITE_URL}/soiree/${encodeURIComponent(code)}`;
 
 // ---------- Routage : lien de réservation personnalisé + correspondance profil → soirées ----------
 const TYPES = ['Hétéro', 'Gay hommes', 'Gay femmes'];
-const TRANCHES = ['30-40', '40-50', '50-60'];
+const TRANCHES = ['20-30', '30-40', '40-50', '50-60'];
 const resaToken = (email) => crypto.createHmac('sha256', SECRET).update('resa:' + String(email).toLowerCase()).digest('base64url');
 const resaLink = (email) => `${SITE_URL}/reserver?e=${encodeURIComponent(email)}&t=${resaToken(email)}`;
 const resaLinkSoiree = (email, code) => `${SITE_URL}/reserver?e=${encodeURIComponent(email)}&t=${resaToken(email)}&s=${encodeURIComponent(code)}`;
@@ -408,12 +408,12 @@ function resaCSV(rows) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let lastCampaign = null; // { at, total, sent, failed, running, subject }
 
-async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null) {
+async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null, soireesForList = null) {
   lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
   const dateTxt = (so && so.date_texte) ? so.date_texte : '';
   const lieuTxt = (so && so.lieu) ? so.lieu : '';
   const manqueTxt = so ? deficitTxt(so) : '';
-  const allSoirees = db.prepare('SELECT * FROM soirees WHERE actif=1 ORDER BY id DESC').all();
+  const allSoirees = (soireesForList && soireesForList.length) ? soireesForList : db.prepare('SELECT * FROM soirees WHERE actif=1 ORDER BY id DESC').all();
   for (const r of recipients) {
     const prenom = (r.prenom || '').trim() || 'à toi';
     const unsub = unsubLink(r.email);
@@ -787,11 +787,8 @@ function soireesPage() {
     <a class=back href="/admin">← Retour aux inscriptions</a>
     <h2>Soirées</h2>
     <form class=panel method=post action=/admin/soirees>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <span style="flex:1;min-width:150px"><label>Code (court, sans espace)</label><input name=code required placeholder="ex. aout10" style="width:100%"></span>
-        <span style="flex:2;min-width:200px"><label>Date (texte libre)</label><input name=date_texte placeholder="ex. 10 août à 20h30" style="width:100%"></span>
-      </div>
-      <label>Lieu</label><input name=lieu placeholder="ex. Bar Le Dancing, Bd des Roches 19, 1006 Lausanne" style="width:100%">
+      <label>Code (court, sans espace)</label><input name=code required placeholder="ex. sept22" style="width:100%">
+      <label>Lieu</label><input name=lieu value="Happy Days Bar &amp; Gril, rue Saint Pierre 3, Lausanne" style="width:100%">
       <label>Prix</label><input name=prix placeholder="ex. 20 CHF" style="width:100%">
       <div style="display:flex;gap:12px;flex-wrap:wrap">
         <span style="flex:1;min-width:150px"><label>Type</label><select name=type style="width:100%"><option value="">—</option>${TYPES.map((v) => `<option>${v}</option>`).join('')}</select></span>
@@ -802,7 +799,7 @@ function soireesPage() {
       <input type="datetime-local" name="date_start" style="width:100%">
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
         <span style="flex:1;min-width:110px"><label>Places / sexe</label><input name=cap_sexe type=number value=15 style="width:100%"></span>
-        <span style="flex:1;min-width:110px"><label>Min / sexe</label><input name=min_sexe type=number value=10 style="width:100%"></span>
+        <span style="flex:1;min-width:110px"><label>Min / sexe</label><input name=min_sexe type=number value=8 style="width:100%"></span>
         <span style="flex:1;min-width:110px"><label>Capacité (gay)</label><input name=cap_total type=number value=30 style="width:100%"></span>
       </div>
       <p class=hint>Hétéro : parité stricte, min/sexe puis max/sexe. Gay : capacité totale, sans parité.</p>
@@ -822,7 +819,6 @@ function soireeEditPage(s) {
     <form class=panel method=post action=/admin/soirees/edit>
       <input type=hidden name=id value=${s.id}>
       <label>Code</label><input name=code value="${esc(s.code)}" required style="width:100%">
-      <label>Date</label><input name=date_texte value="${esc(s.date_texte)}" style="width:100%">
       <label>Lieu</label><input name=lieu value="${esc(s.lieu)}" style="width:100%">
       <label>Prix</label><input name=prix value="${esc(s.prix)}" style="width:100%">
       <label>Type</label><select name=type style="width:100%"><option value="">—</option>${TYPES.map((v) => `<option${v === s.type ? ' selected' : ''}>${v}</option>`).join('')}</select>
@@ -858,7 +854,7 @@ function reservationsPage(s, done) {
     <a class=back href="/admin/soirees">← Retour aux soirées</a>
     <h2>Réservations — ${esc(s.date_texte || s.code)}${s.annulee ? ' <span style="color:#c0392b">(ANNULÉE)</span>' : ''}</h2>
     ${done ? '<div class=panel style="border-color:#8fbf8f;background:#eefaee;color:#1c7a3f">✅ Vérifications lancées.</div>' : ''}
-    <div class=panel>${capLine}<br>${s.date_start ? `📅 ${esc(new Date(s.date_start).toLocaleString('fr-CH'))}` : '<span style="color:#c0392b">⚠ pas de date/heure exacte → aucune automatisation (rappels, annulation, réconciliation)</span>'}</div>
+    <div class=panel>${capLine}<br>${s.date_start ? `📅 ${esc(formatFr(s.date_start))}` : '<span style="color:#c0392b">⚠ pas de date/heure exacte → aucune automatisation (rappels, annulation, réconciliation)</span>'}</div>
     <div class=cards>
       <div class=card><div class=n>${cnt('paid')}</div><div class=l>Payées</div></div>
       ${par ? `<div class=card><div class=n>${cnt('paid', 'Femme')}</div><div class=l>F payées</div></div><div class=card><div class=n>${cnt('paid', 'Homme')}</div><div class=l>H payées</div></div>` : ''}
@@ -892,15 +888,39 @@ Ta team Soirée Match 💛`;
 
 const TEMPLATES = [
   {
-    name: 'Général — prochaine soirée (tous)',
-    subject: 'La prochaine Soirée Match a lieu le {date}',
+    name: 'Prochaine soirée — hétéro (avec parité)',
+    subject: 'La prochaine Soirée Match hétéro 30-40 ans a lieu le {date}',
     body: `Bonjour {prenom},
 
-La date de la prochaine Soirée Match est fixée : {date}, à {lieu}.
-
-Au programme : des jeux pensés pour briser la glace en douceur, de la musique, et de vraies rencontres en personne, dans un cadre bienveillant animé par un thérapeute. Entrée : 20 CHF. La salle nous est offerte par le bar en échange de nos consommations, alors on consomme sur place tout au long de la soirée.
+Ta prochaine date pour faire des rencontres est fixée : ce sera le {date}. La soirée commence à 20h30.
 
 Pour réserver ta place : {reserver}
+
+Nous nous réjouissons de ta présence et espérons que tu passeras une soirée géniale à faire des connaissances — et à matcher !
+
+Comment ça marche : toutes les inscriptions sont équilibrées pour garantir une égalité parfaite hommes/femmes (par ex. 8/8, 10/10 ou 15/15). L'ordre d'inscription compte : les places sont validées dans l'ordre d'arrivée. Tu peux payer et confirmer ta place dès qu'une place est disponible pour ton profil ; sinon, tu es placé sur liste d'attente et tu reçois un lien pour payer dès qu'une place se libère (tu as alors 3h). Il y a un nombre minimal et maximal de participants, et tu es tenu au courant automatiquement par e-mail à chaque évolution.
+
+Si tu t'inscris au dernier moment, ta place peut rester en attente tant qu'une personne du sexe opposé ne s'est pas inscrite — comme ça, tu ne te retrouves jamais seul dans ton coin.
+
+Un souci technique avec le site ou le formulaire ? Écris-nous à contact@soireematch.com. Et pour être sûr de recevoir nos messages, ajoute cette adresse à tes contacts.
+
+Au plaisir de t'y voir,
+L'équipe Soirée Match`,
+  },
+  {
+    name: 'Prochaine soirée — gay / lesbiennes (sans parité)',
+    subject: 'La prochaine Soirée Match (entre hommes / entre femmes) a lieu le {date}',
+    body: `Bonjour {prenom},
+
+Ta prochaine date pour faire des rencontres est fixée : ce sera le {date}. La soirée commence à 20h30.
+
+Pour réserver ta place : {reserver}
+
+Nous nous réjouissons de ta présence et espérons que tu passeras une soirée géniale à faire des connaissances — et à matcher !
+
+Le nombre de places est limité et les réservations se font dans l'ordre d'arrivée : tu peux payer et confirmer ta place tout de suite, sans attendre. Si la soirée est complète, tu es placé sur liste d'attente et prévenu par e-mail dès qu'une place se libère.
+
+Un souci technique avec le site ou le formulaire ? Écris-nous à contact@soireematch.com. Et pour être sûr de recevoir nos messages, ajoute cette adresse à tes contacts.
 
 Au plaisir de t'y voir,
 L'équipe Soirée Match`,
@@ -991,9 +1011,12 @@ function composePage() {
       </div>
       <p class=hint>Laisse « Tous » + « Peu importe » pour écrire à <b>tout le monde</b>. Repères : Femmes ${byG['Femme'] || 0} · Hommes ${byG['Homme'] || 0} · Non binaire ${byG['Non binaire'] || 0} — cherche : hommes ${byR['Des hommes'] || 0}, femmes ${byR['Des femmes'] || 0}, les deux ${byR['Les deux'] || 0}. (Les désinscrits sont exclus automatiquement.)</p>
 
-      <label>Soirée liée <span class=hint>(le {lien} du message pointera vers sa page de réservation)</span></label>
-      <select name=soiree><option value="">— Aucune (le lien mène au site ${esc(SITE_URL)}) —</option>${soirees.map((s) => `<option value="${esc(s.code)}">${esc(s.date_texte || s.code)} (${esc(s.code)})</option>`).join('')}</select>
-      <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=auto checked> Envoyer uniquement aux personnes concernées par la soirée liée (âge ±3, sexe, orientation)</label>
+      <label>Soirées à inclure <span class=hint>(coche une ou plusieurs — elles s'affichent via la balise {soirees}, chacune avec un lien « Réserver » pour les personnes concernées)</span></label>
+      <div style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto;border:1px solid #ddd;border-radius:8px;padding:10px">
+        ${soirees.length ? soirees.map((s) => `<label style="display:flex;align-items:center;gap:8px;font-weight:400"><input type=checkbox name=soirees value="${esc(s.code)}"> ${esc(s.date_texte || s.code)} (${esc(s.code)})</label>`).join('') : '<span class=hint>Aucune soirée active — crée-en dans « Soirées ».</span>'}
+      </div>
+      <p class=hint>Si tu coches <b>une seule</b> soirée, les balises {lien}, {date} et {lieu} pointent vers elle. Si tu en coches plusieurs (ou aucune), utilise <b>{soirees}</b> pour toutes les lister ; {lien} mène alors au site.</p>
+      <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=auto checked> Envoyer uniquement aux personnes concernées par les soirées cochées (âge ±3, sexe, orientation)</label>
 
       <label>Objet</label>
       <input id=subject name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
@@ -1100,10 +1123,24 @@ function unsubConfirmPage(email, token) {
 const HOLD_MS = 3 * 60 * 60 * 1000;                 // 3h pour confirmer/payer une place proposée
 const nowMs = () => Date.now();
 const nowIso = () => new Date().toISOString();
+const VENUE_DEFAULT = 'Happy Days Bar & Gril, rue Saint Pierre 3, Lausanne';
+const FR_DAYS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+const FR_MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+function dtLocalToIso(v) {
+  const m = String(v || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00.000Z` : null;
+}
+function formatFr(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const hh = String(d.getUTCHours()).padStart(2, '0'), mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${FR_DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${FR_MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()} à ${hh}h${mm}`;
+}
 const isParity = (so) => (so.type === 'Hétéro');
 const otherGenre = (g) => (g === 'Femme' ? 'Homme' : 'Femme');
 const capSexe = (so) => (Number(so.cap_sexe) > 0 ? Number(so.cap_sexe) : 15);
-const minSexe = (so) => (Number(so.min_sexe) > 0 ? Number(so.min_sexe) : 10);
+const minSexe = (so) => (Number(so.min_sexe) > 0 ? Number(so.min_sexe) : 8);
 const capTotal = (so) => (Number(so.cap_total) > 0 ? Number(so.cap_total) : 30);
 const minTotal = (so) => (Number(so.min_total) > 0 ? Number(so.min_total) : 10);
 
@@ -1474,13 +1511,16 @@ const server = http.createServer(async (req, res) => {
       const subject = (d.subject || '').trim(), body = (d.body || '').trim();
       const genre = (d.genre || '').trim(), recherche = (d.recherche || '').trim(), tranche = (d.tranche || '').trim();
       if (!transporter || !subject || !body) return send(res, 302, '', { Location: '/admin/compose' });
-      const so = (d.soiree || '').trim() ? getSoiree((d.soiree || '').trim()) : null;
+      let codes = d.soirees || [];
+      if (!Array.isArray(codes)) codes = [codes];
+      const selected = codes.map((c) => getSoiree(String(c).trim())).filter(Boolean);
+      const so = selected.length === 1 ? selected[0] : null;   // balises singulières {lien}/{date}/{lieu}
       const linkUrl = so ? soireeLink(so.code) : SITE_URL;
       const auto = (d.auto === 'on' || d.auto === '1');
-      const recips = (auto && so)
-        ? db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0').all().filter((p) => eligibleForSoiree(p, so))
+      const recips = (auto && selected.length)
+        ? db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0').all().filter((p) => selected.some((sel) => eligibleForSoiree(p, sel)))
         : recipientsFor({ genre, recherche, tranche });
-      runCampaign(recips, subject, body, linkUrl, so);   // en arrière-plan (non bloquant)
+      runCampaign(recips, subject, body, linkUrl, so, selected);   // en arrière-plan (non bloquant)
       return send(res, 302, '', { Location: '/admin' });
     }
     if (p === '/admin/test' && req.method === 'GET') return send(res, 200, testComposePage(url.searchParams.get('done') || ''));
@@ -1504,9 +1544,10 @@ const server = http.createServer(async (req, res) => {
       const code = (d.code || '').trim().replace(/\s+/g, '').toLowerCase();
       if (code) {
         try {
-          const dstart = (d.date_start || '').trim() ? new Date(d.date_start).toISOString() : null;
+          const dstart = dtLocalToIso(d.date_start);
+          const lieu = (d.lieu || '').trim() || VENUE_DEFAULT;
           db.prepare('INSERT INTO soirees(code,date_texte,lieu,prix,actif,created_at,type,tranche,date_start,cap_sexe,min_sexe,cap_total) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(code, (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, new Date().toISOString(), (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 10, Number(d.cap_total) || 30);
+            .run(code, formatFr(dstart), lieu, (d.prix || '').trim(), d.actif ? 1 : 0, new Date().toISOString(), (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 8, Number(d.cap_total) || 30);
         } catch { /* code déjà utilisé */ }
       }
       return send(res, 302, '', { Location: '/admin/soirees' });
@@ -1520,9 +1561,10 @@ const server = http.createServer(async (req, res) => {
       const d = parseForm(await readBody(req));
       const id = Number(d.id);
       if (id) try {
-        const dstart = (d.date_start || '').trim() ? new Date(d.date_start).toISOString() : null;
+        const dstart = dtLocalToIso(d.date_start);
+        const lieu = (d.lieu || '').trim() || VENUE_DEFAULT;
         db.prepare('UPDATE soirees SET code=?,date_texte=?,lieu=?,prix=?,actif=?,type=?,tranche=?,date_start=?,cap_sexe=?,min_sexe=?,cap_total=? WHERE id=?')
-          .run((d.code || '').trim().replace(/\s+/g, '').toLowerCase(), (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 10, Number(d.cap_total) || 30, id);
+          .run((d.code || '').trim().replace(/\s+/g, '').toLowerCase(), formatFr(dstart), lieu, (d.prix || '').trim(), d.actif ? 1 : 0, (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 8, Number(d.cap_total) || 30, id);
       } catch { /* code en conflit */ }
       return send(res, 302, '', { Location: '/admin/soirees' });
     }
