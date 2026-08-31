@@ -205,6 +205,20 @@ try { db.exec('ALTER TABLE soirees ADD COLUMN tranche TEXT'); } catch { /* déj�
 try { db.exec('ALTER TABLE soirees ADD COLUMN type TEXT'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN stripe_session TEXT'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN amount INTEGER'); } catch { /* déjà là */ }
+// Parité / liste d'attente (Option A)
+try { db.exec('ALTER TABLE soirees ADD COLUMN cap_sexe INTEGER DEFAULT 15'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN min_sexe INTEGER DEFAULT 10'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN cap_total INTEGER DEFAULT 30'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN min_total INTEGER DEFAULT 10'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN date_start TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN annulee INTEGER DEFAULT 0'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN alert72_sent INTEGER DEFAULT 0'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN reconcile_done INTEGER DEFAULT 0'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE reservations ADD COLUMN status TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE reservations ADD COLUMN hold_expires TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE reservations ADD COLUMN priority INTEGER DEFAULT 0'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE reservations ADD COLUMN stripe_payment_intent TEXT'); } catch { /* déjà là */ }
+try { db.exec("UPDATE reservations SET status = CASE WHEN COALESCE(paid,0)=1 THEN 'paid' ELSE 'expired' END WHERE status IS NULL"); } catch {}
 
 const getSoiree = (code) => db.prepare('SELECT * FROM soirees WHERE code=?').get(code);
 const getSoireeById = (id) => db.prepare('SELECT * FROM soirees WHERE id=?').get(id);
@@ -263,11 +277,20 @@ async function createCheckout(resaId, so, email) {
   db.prepare('UPDATE reservations SET stripe_session=?, amount=? WHERE id=?').run(sess.id, amount, resaId);
   return sess.url;
 }
-function markPaidAndConfirm(resa) {
-  if (!resa || resa.paid) return;
-  db.prepare('UPDATE reservations SET paid=1 WHERE id=?').run(resa.id);
-  const so = getSoireeById(resa.soiree_id);
-  if (so) sendReservationMail(so, { prenom: resa.prenom, nom: resa.nom, email: resa.email });
+function markPaidAndConfirm(resa, paymentIntent) {
+  if (!resa) return;
+  const fresh = db.prepare('SELECT * FROM reservations WHERE id=?').get(resa.id);
+  if (!fresh || fresh.status === 'paid') return;
+  const so = getSoireeById(fresh.soiree_id);
+  db.prepare("UPDATE reservations SET status='paid', paid=1, stripe_payment_intent=? WHERE id=?").run(paymentIntent || fresh.stripe_payment_intent || null, fresh.id);
+  if (!so) return;
+  if (so.annulee || so.reconcile_done) {
+    // soirée annulée ou déjà réconciliée : on ne peut plus garantir la place -> remboursement
+    refundResa({ ...fresh, stripe_payment_intent: paymentIntent || fresh.stripe_payment_intent }, so, so.annulee ? 'annulation' : 'parite');
+    return;
+  }
+  sendReservationMail(so, fresh);
+  promote(so);
 }
 function verifyStripeSig(payload, header, secret) {
   try {
@@ -278,29 +301,45 @@ function verifyStripeSig(payload, header, secret) {
   } catch { return false; }
 }
 async function startReservation(res, so, person) {
-  const email = person.email;
-  const paidDup = db.prepare('SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND paid=1').get(so.id, email);
-  if (paidDup) return send(res, 200, pubMsg('Déjà réservé', 'Ta place pour cette soirée est déjà confirmée. À très vite ! 💛'));
+  const email = person.email, genre = person.genre;
+  // déjà confirmé ?
+  if (db.prepare("SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND status='paid'").get(so.id, email))
+    return send(res, 200, pubMsg('Déjà réservé', 'Ta place pour cette soirée est déjà confirmée. À très vite ! 💛'));
+  // un hold en cours ? -> on reprend le paiement
+  const hold = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND status='hold' AND hold_expires>?").get(so.id, email, nowIso());
+  if (hold) {
+    if (!PAY_ON) { markPaidAndConfirm(hold); return send(res, 200, soireeOkPage(so)); }
+    try { return send(res, 302, '', { Location: await createCheckout(hold.id, so, email) }); }
+    catch (e) { return send(res, 200, pubMsg('Paiement momentanément indisponible', 'Réessaie dans un instant.')); }
+  }
+  // déjà en liste d'attente ?
+  if (db.prepare("SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND status='waiting'").get(so.id, email))
+    return send(res, 200, waitlistPage(so));
+
+  // place ouverte pour ce profil ?
+  if (!slotOpen(so, genre)) {
+    db.prepare("INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,status,priority,paid) VALUES(?,?,?,?,?,?,?,?,?,'waiting',0,0)")
+      .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, genre, person.recherche, nowIso());
+    mailWaitlist(so, person);
+    return send(res, 200, waitlistPage(so));
+  }
+  // mode gratuit (pas de Stripe) : on confirme direct
   if (!PAY_ON) {
-    const dup = db.prepare('SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?)').get(so.id, email);
-    if (!dup) {
-      db.prepare(`INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
-        .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, person.genre, person.recherche, new Date().toISOString());
-      sendReservationMail(so, person);
-    }
+    db.prepare("INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,status,priority,paid) VALUES(?,?,?,?,?,?,?,?,?,'paid',0,1)")
+      .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, genre, person.recherche, nowIso());
+    sendReservationMail(so, person);
+    promote(so);
     return send(res, 200, soireeOkPage(so));
   }
-  let resa = db.prepare('SELECT * FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND COALESCE(paid,0)=0').get(so.id, email);
-  if (!resa) {
-    const info = db.prepare(`INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,paid) VALUES(?,?,?,?,?,?,?,?,?,0)`)
-      .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, person.genre, person.recherche, new Date().toISOString());
-    resa = { id: Number(info.lastInsertRowid) };
-  }
+  // Stripe : on crée un hold (3h) puis on lance le paiement
+  const info = db.prepare("INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,status,hold_expires,priority,paid) VALUES(?,?,?,?,?,?,?,?,?,'hold',?,0,0)")
+    .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, genre, person.recherche, nowIso(), new Date(nowMs() + HOLD_MS).toISOString());
+  const rid = Number(info.lastInsertRowid);
   try {
-    const link = await createCheckout(resa.id, so, email);
-    return send(res, 302, '', { Location: link });
+    return send(res, 302, '', { Location: await createCheckout(rid, so, email) });
   } catch (e) {
     console.error('Stripe checkout échoué:', e.message);
+    db.prepare("UPDATE reservations SET status='expired' WHERE id=?").run(rid);
     return send(res, 200, pubMsg('Paiement momentanément indisponible', 'Réessaie dans un instant, ou écris-nous à contact@soireematch.com.'));
   }
 }
@@ -373,6 +412,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
   lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
   const dateTxt = (so && so.date_texte) ? so.date_texte : '';
   const lieuTxt = (so && so.lieu) ? so.lieu : '';
+  const manqueTxt = so ? deficitTxt(so) : '';
   const allSoirees = db.prepare('SELECT * FROM soirees WHERE actif=1 ORDER BY id DESC').all();
   for (const r of recipients) {
     const prenom = (r.prenom || '').trim() || 'à toi';
@@ -390,14 +430,14 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
         ? `<div style="margin:10px 0"><b>${label}</b> — <a href="${resaLinkSoiree(r.email, so2.code)}" style="color:#2f7d8a;font-weight:600">Réserver ma place</a></div>`
         : `<div style="margin:10px 0;color:#8a9a99">${label} — ${esc(soireeAudience(so2))}</div>`;
     }).join('');
-    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateTxt).replace(/\{lieu\}/gi, lieuTxt).replace(/\{soirees\}/gi, sT);
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateTxt).replace(/\{lieu\}/gi, lieuTxt).replace(/\{manque\}/gi, manqueTxt).replace(/\{soirees\}/gi, sT);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
     const btn = `<a href="${resa}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Je réserve ma place</a>`;
     const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
-      .replace(/\{date\}/gi, esc(dateTxt)).replace(/\{lieu\}/gi, esc(lieuTxt))
+      .replace(/\{date\}/gi, esc(dateTxt)).replace(/\{lieu\}/gi, esc(lieuTxt)).replace(/\{manque\}/gi, esc(manqueTxt))
       .replace(/\{soirees\}/gi, sH)
       .replace(/\n/g, '<br>');
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:540px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55">`
@@ -405,7 +445,11 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
       + `<hr style="border:none;border-top:1px solid #e0e0e0;margin:22px 0">`
       + `<p style="font-size:12px;color:#8a9a99">Tu reçois cet e-mail car tu t'es inscrit(e) à la Soirée Match. <a href="${unsub}" style="color:#8a9a99">Se désinscrire</a>.</p></div>`;
     try {
-      await transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: subj, text: txt, html });
+      await transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: subj, text: txt, html,
+        headers: {
+          'List-Unsubscribe': `<${unsub}>, <mailto:${MAIL_USER}?subject=désinscription>`,
+          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        } });
       lastCampaign.sent++;
     } catch (e) { lastCampaign.failed++; console.error('Campagne — échec', r.email, e.message); }
     await sleep(300);
@@ -754,6 +798,14 @@ function soireesPage() {
         <span style="flex:1;min-width:150px"><label>Tranche d'âge</label><select name=tranche style="width:100%"><option value="">—</option>${TRANCHES.map((v) => `<option>${v}</option>`).join('')}</select></span>
       </div>
       <p class=hint>Type + tranche d'âge servent au routage : chaque inscrit ne verra que les soirées qui le concernent.</p>
+      <label>Date &amp; heure exactes <span class=hint>(pour rappels &amp; équilibrage auto — sinon pas d'automatisation)</span></label>
+      <input type="datetime-local" name="date_start" style="width:100%">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
+        <span style="flex:1;min-width:110px"><label>Places / sexe</label><input name=cap_sexe type=number value=15 style="width:100%"></span>
+        <span style="flex:1;min-width:110px"><label>Min / sexe</label><input name=min_sexe type=number value=10 style="width:100%"></span>
+        <span style="flex:1;min-width:110px"><label>Capacité (gay)</label><input name=cap_total type=number value=30 style="width:100%"></span>
+      </div>
+      <p class=hint>Hétéro : parité stricte, min/sexe puis max/sexe. Gay : capacité totale, sans parité.</p>
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif checked style="width:auto"> Active (réservations ouvertes)</label>
       <div style="margin-top:14px"><button>Créer la soirée</button></div>
     </form>
@@ -775,6 +827,12 @@ function soireeEditPage(s) {
       <label>Prix</label><input name=prix value="${esc(s.prix)}" style="width:100%">
       <label>Type</label><select name=type style="width:100%"><option value="">—</option>${TYPES.map((v) => `<option${v === s.type ? ' selected' : ''}>${v}</option>`).join('')}</select>
       <label>Tranche d'âge</label><select name=tranche style="width:100%"><option value="">—</option>${TRANCHES.map((v) => `<option${v === s.tranche ? ' selected' : ''}>${v}</option>`).join('')}</select>
+      <label>Date &amp; heure exactes</label><input type="datetime-local" name="date_start" value="${s.date_start ? esc(new Date(s.date_start).toISOString().slice(0, 16)) : ''}" style="width:100%">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
+        <span style="flex:1;min-width:110px"><label>Places / sexe</label><input name=cap_sexe type=number value="${capSexe(s)}" style="width:100%"></span>
+        <span style="flex:1;min-width:110px"><label>Min / sexe</label><input name=min_sexe type=number value="${minSexe(s)}" style="width:100%"></span>
+        <span style="flex:1;min-width:110px"><label>Capacité (gay)</label><input name=cap_total type=number value="${capTotal(s)}" style="width:100%"></span>
+      </div>
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif ${s.actif ? 'checked' : ''} style="width:auto"> Active</label>
       <div style="margin-top:14px"><button>Enregistrer</button> <a href="/admin/soirees"><button type=button class=sec>Annuler</button></a></div>
     </form>
@@ -785,22 +843,35 @@ function soireeEditPage(s) {
     </form>
   </div></html>`;
 }
-function reservationsPage(s) {
-  const list = db.prepare('SELECT * FROM reservations WHERE soiree_id=? ORDER BY id DESC').all(s.id);
-  const g = {}; list.forEach((r) => { g[r.genre] = (g[r.genre] || 0) + 1; });
-  const rows = list.map((r) => `<tr><td>${esc(r.created_at.slice(0, 10))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.tel)}</td><td>${esc(r.annee)}</td><td>${esc(r.genre)}</td><td>${esc(r.recherche)}</td><td style="text-align:center">${!PAY_ON ? '—' : (r.paid ? '✅' : '⏳')}</td></tr>`).join('');
+function reservationsPage(s, done) {
+  const list = db.prepare("SELECT * FROM reservations WHERE soiree_id=? ORDER BY (status='paid') DESC, priority DESC, created_at ASC").all(s.id);
+  const cnt = (st, g) => list.filter((r) => r.status === st && (!g || r.genre === g)).length;
+  const par = isParity(s);
+  const lbl = { paid: '✅ payé', hold: '⏳ à confirmer (3h)', waiting: "🕒 liste d'attente", refunded: '↩ remboursé', expired: '✕ expiré', cancelled: '✕ annulé' };
+  const rows = list.map((r, i) => `<tr><td>${i + 1}</td><td>${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.genre)}</td><td>${lbl[r.status] || esc(r.status || '')}</td></tr>`).join('');
+  const viable = isViable(s);
+  const capLine = par
+    ? `Parité stricte — <b>${cnt('paid', 'Femme')}</b> F / <b>${cnt('paid', 'Homme')}</b> H payés · min ${minSexe(s)}/sexe · max ${capSexe(s)}/sexe · ${viable ? '<span style="color:#1c7a3f">✔ viable</span>' : `<span style="color:#c0392b">✘ sous le minimum (manque ${esc(deficitTxt(s))})</span>`}`
+    : `Sans parité — <b>${cnt('paid')}</b> payés · capacité ${capTotal(s)} · ${viable ? '<span style="color:#1c7a3f">✔ viable</span>' : '<span style="color:#c0392b">✘ sous le minimum</span>'}`;
   return `${pageHead('Réservations')}
   <div class=wrap>
     <a class=back href="/admin/soirees">← Retour aux soirées</a>
-    <h2>Réservations — ${esc(s.date_texte || s.code)}</h2>
+    <h2>Réservations — ${esc(s.date_texte || s.code)}${s.annulee ? ' <span style="color:#c0392b">(ANNULÉE)</span>' : ''}</h2>
+    ${done ? '<div class=panel style="border-color:#8fbf8f;background:#eefaee;color:#1c7a3f">✅ Vérifications lancées.</div>' : ''}
+    <div class=panel>${capLine}<br>${s.date_start ? `📅 ${esc(new Date(s.date_start).toLocaleString('fr-CH'))}` : '<span style="color:#c0392b">⚠ pas de date/heure exacte → aucune automatisation (rappels, annulation, réconciliation)</span>'}</div>
     <div class=cards>
-      <div class=card><div class=n>${list.length}</div><div class=l>Total</div></div>${PAY_ON ? `<div class=card><div class=n>${list.filter((r) => r.paid).length}</div><div class=l>Payées</div></div>` : ''}
-      <div class=card><div class=n>${g['Femme'] || 0}</div><div class=l>Femmes</div></div>
-      <div class=card><div class=n>${g['Homme'] || 0}</div><div class=l>Hommes</div></div>
-      <div class=card><div class=n>${g['Non binaire'] || 0}</div><div class=l>Non binaire</div></div>
+      <div class=card><div class=n>${cnt('paid')}</div><div class=l>Payées</div></div>
+      ${par ? `<div class=card><div class=n>${cnt('paid', 'Femme')}</div><div class=l>F payées</div></div><div class=card><div class=n>${cnt('paid', 'Homme')}</div><div class=l>H payées</div></div>` : ''}
+      <div class=card><div class=n>${cnt('hold')}</div><div class=l>À confirmer</div></div>
+      <div class=card><div class=n>${cnt('waiting')}</div><div class=l>Liste d'attente</div></div>
+      <div class=card><div class=n>${cnt('refunded')}</div><div class=l>Remboursées</div></div>
     </div>
-    <div class=bar><a href="/admin/soirees/reservations/export?id=${s.id}"><button type=button>⬇ Exporter (CSV)</button></a></div>
-    ${list.length ? `<table><tr><th>Date</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Tél</th><th>Année</th><th>Genre</th><th>Recherche</th><th>Payé</th></tr>${rows}</table>`
+    <div class=bar>
+      <a href="/admin/soirees/reservations/export?id=${s.id}"><button type=button>⬇ Exporter (CSV)</button></a>
+      <form method=post action=/admin/soirees/run-checks style="display:inline"><input type=hidden name=id value=${s.id}><button class=sec>🔄 Lancer les vérifications</button></form>
+      ${s.annulee ? '' : `<form method=post action=/admin/soirees/cancel style="display:inline" onsubmit="return confirm('Annuler la soirée et rembourser toutes les places payées ?')"><input type=hidden name=id value=${s.id}><button class=danger>✕ Annuler + rembourser</button></form>`}
+    </div>
+    ${list.length ? `<table><tr><th>#</th><th>Inscrit</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Genre</th><th>Statut</th></tr>${rows}</table>`
       : `<div class=empty>Aucune réservation pour l'instant.</div>`}
   </div></html>`;
 }
@@ -809,7 +880,7 @@ function reservationsPage(s) {
 const PRATIQUE = `📍 {lieu}
 🎟️ Entrée : 20 CHF
 
-Un petit mot qui compte : la salle nous est gentiment offerte par le bar. Alors on compte sur toi pour commander un verre ou deux et leur faire honneur — c'est aussi excellent pour le courage 😉. Les consommations sont à ta charge.
+Un petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !
 
 Au programme : des jeux intelligents pour se découvrir, se comprendre vraiment et briser la glace, de la musique, quelques fous rires, et surtout de vraies rencontres humaines autour d'un verre — sans applis, sans rejet, sans faux-semblants.
 
@@ -822,14 +893,17 @@ Ta team Soirée Match 💛`;
 const TEMPLATES = [
   {
     name: 'Général — prochaine soirée (tous)',
-    subject: '💛 La prochaine Soirée Match, c\'est le {date} — tu viens ?',
+    subject: 'La prochaine Soirée Match a lieu le {date}',
     body: `Bonjour {prenom},
 
-Bonne nouvelle : la date de la prochaine Soirée Match est tombée ! On t'attend le {date}.
+La date de la prochaine Soirée Match est fixée : {date}, à {lieu}.
 
-${PRATIQUE}
+Au programme : des jeux pensés pour briser la glace en douceur, de la musique, et de vraies rencontres en personne, dans un cadre bienveillant animé par un thérapeute. Entrée : 20 CHF. La salle nous est offerte par le bar en échange de nos consommations, alors on consomme sur place tout au long de la soirée.
 
-${SIGNOFF}`,
+Pour réserver ta place : {reserver}
+
+Au plaisir de t'y voir,
+L'équipe Soirée Match`,
   },
   {
     name: 'Hommes → cherchent une femme',
@@ -874,6 +948,20 @@ La prochaine Soirée Match dédiée aux rencontres entre femmes arrive : le {dat
 ${PRATIQUE}
 
 ${SIGNOFF}`,
+  },
+  {
+    name: 'Relance — il manque des inscrits',
+    subject: 'Il reste des places pour la Soirée Match du {date} 💛',
+    body: `Bonjour {prenom},
+
+La prochaine Soirée Match approche — {date}, {lieu} — et il nous manque encore {manque} pour garantir une parité parfaite et une belle soirée.
+
+Si tu hésitais : c'est le moment idéal. Et si quelqu'un autour de toi pourrait aimer, transmets-lui ce message — nos plus belles soirées naissent du bouche-à-oreille.
+
+{reserver}
+
+À très vite,
+L'équipe Soirée Match`,
   },
 ];
 
@@ -985,11 +1073,200 @@ function editPage(r) {
 
 function unsubPage(ok) {
   return ok
-    ? pubMsg('C\'est fait ✓', 'Tu ne recevras plus d\'e-mails de la Soirée Match. Si c\'était une erreur, écris-nous à contact@soireematch.com.')
+    ? pubMsg('C\'est fait ✓', 'Tu ne recevras plus d\'e-mails de la Soirée Match, et tu ne verras plus les prochaines soirées. Si c\'était une erreur, réinscris-toi sur soireematch.com ou écris-nous à contact@soireematch.com.')
     : pubMsg('Lien invalide', 'Ce lien de désinscription n\'est pas valide. Écris-nous à contact@soireematch.com et on s\'en occupe.');
+}
+function unsubConfirmPage(email, token) {
+  const q = `e=${encodeURIComponent(email)}&t=${encodeURIComponent(token)}`;
+  return `${siteHead('Se désinscrire — Soirée Match')}<div class=box>
+    <h1>Avant de partir… 💛</h1>
+    <p>Tu es sur le point de te désinscrire de la liste Soirée Match avec l'adresse <b>${esc(email)}</b>. Prends un instant : ce n'est pas automatique, tu dois confirmer ci-dessous.</p>
+    <p style="text-align:left;max-width:440px;margin:14px auto">Si tu confirmes :</p>
+    <ul style="text-align:left;max-width:440px;margin:0 auto 14px;line-height:1.7">
+      <li>tu ne recevras <b>plus aucun e-mail</b> de notre part ;</li>
+      <li>tu ne seras <b>plus informé(e) des prochaines soirées</b> près de chez toi ;</li>
+      <li>tes liens de réservation personnels ne fonctionneront plus (il faudra te réinscrire sur soireematch.com).</li>
+    </ul>
+    <p style="max-width:440px;margin:0 auto">Tu veux juste souffler un peu ? Écris-nous à <b>contact@soireematch.com</b>, on peut espacer les envois plutôt que tout arrêter.</p>
+    <form method=post action="/unsub?${q}" style="margin-top:20px">
+      <button class=btn style="background:#c0392b">Oui, me désinscrire définitivement</button>
+    </form>
+    <p style="margin-top:14px"><a href="${SITE_URL}">← Non, je reste inscrit(e)</a></p>
+  </div></html>`;
 }
 
 // ---------- Serveur ----------
+// ================= Parité, liste d'attente & remboursements (Option A) =================
+const HOLD_MS = 3 * 60 * 60 * 1000;                 // 3h pour confirmer/payer une place proposée
+const nowMs = () => Date.now();
+const nowIso = () => new Date().toISOString();
+const isParity = (so) => (so.type === 'Hétéro');
+const otherGenre = (g) => (g === 'Femme' ? 'Homme' : 'Femme');
+const capSexe = (so) => (Number(so.cap_sexe) > 0 ? Number(so.cap_sexe) : 15);
+const minSexe = (so) => (Number(so.min_sexe) > 0 ? Number(so.min_sexe) : 10);
+const capTotal = (so) => (Number(so.cap_total) > 0 ? Number(so.cap_total) : 30);
+const minTotal = (so) => (Number(so.min_total) > 0 ? Number(so.min_total) : 10);
+
+function paidCount(soId, genre) {
+  return genre
+    ? db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='paid' AND genre=?").get(soId, genre).n
+    : db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='paid'").get(soId).n;
+}
+function holdCount(soId, genre) {
+  const iso = nowIso();
+  return genre
+    ? db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='hold' AND hold_expires>? AND genre=?").get(soId, iso, genre).n
+    : db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='hold' AND hold_expires>?").get(soId, iso).n;
+}
+// Une place est-elle ouverte au paiement maintenant pour ce profil ?
+// Hétéro : on n'autorise (payé+hold) d'un sexe que jusqu'au nombre de PAYÉS de l'autre sexe
+// -> garantit |payésF - payésH| <= 1 en permanence. Gay : simple capacité totale.
+function slotOpen(so, genre) {
+  if (isParity(so)) {
+    const held = paidCount(so.id, genre) + holdCount(so.id, genre);
+    return held < capSexe(so) && held <= paidCount(so.id, otherGenre(genre));
+  }
+  const heldT = paidCount(so.id, null) + holdCount(so.id, null);
+  return heldT < capTotal(so);
+}
+function isViable(so) {
+  return isParity(so)
+    ? (paidCount(so.id, 'Femme') >= minSexe(so) && paidCount(so.id, 'Homme') >= minSexe(so))
+    : (paidCount(so.id, null) >= minTotal(so));
+}
+function deficitTxt(so) {
+  if (isParity(so)) {
+    const mf = Math.max(0, minSexe(so) - paidCount(so.id, 'Femme'));
+    const mh = Math.max(0, minSexe(so) - paidCount(so.id, 'Homme'));
+    const parts = [];
+    if (mf) parts.push(mf + ' ' + (mf > 1 ? 'femmes' : 'femme'));
+    if (mh) parts.push(mh + ' ' + (mh > 1 ? 'hommes' : 'homme'));
+    return parts.join(' et ') || 'quelques personnes';
+  }
+  const m = Math.max(0, minTotal(so) - paidCount(so.id, null));
+  return m ? (m + ' ' + (m > 1 ? 'personnes' : 'personne')) : 'quelques personnes';
+}
+
+const payToken = (rid, email) => crypto.createHmac('sha256', SECRET).update('pay:' + rid + ':' + String(email).toLowerCase()).digest('base64url');
+const payLink = (rid, email) => `${SITE_URL}/payer?rid=${rid}&e=${encodeURIComponent(email)}&t=${payToken(rid, email)}`;
+
+// Promeut les 1ers en attente tant qu'une place s'ouvre (ordre : priorité puis ancienneté)
+function promote(soIn) {
+  const so = getSoireeById(soIn.id) || soIn;
+  if (!so.actif || so.annulee) return;
+  const genres = isParity(so) ? ['Femme', 'Homme'] : [null];
+  for (const g of genres) {
+    let guard = 0;
+    while (guard++ < 200 && slotOpen(so, g || 'Femme')) {
+      const w = db.prepare(
+        "SELECT * FROM reservations WHERE soiree_id=? AND status='waiting'" + (g ? ' AND genre=?' : '')
+        + ' ORDER BY priority DESC, created_at ASC LIMIT 1'
+      ).get(...(g ? [so.id, g] : [so.id]));
+      if (!w) break;
+      if (PAY_ON) {
+        db.prepare("UPDATE reservations SET status='hold', hold_expires=? WHERE id=?").run(new Date(nowMs() + HOLD_MS).toISOString(), w.id);
+        mailSlotOpen(so, w);
+      } else {
+        db.prepare("UPDATE reservations SET status='paid', paid=1 WHERE id=?").run(w.id);
+        sendReservationMail(so, w);
+      }
+    }
+  }
+}
+function expireHolds(so) {
+  const info = db.prepare("UPDATE reservations SET status='expired' WHERE soiree_id=? AND status='hold' AND hold_expires<=?").run(so.id, nowIso());
+  return info.changes;
+}
+async function refundResa(resa, so, reason) {
+  try {
+    if (PAY_ON && resa.stripe_payment_intent) await stripeApi('POST', '/v1/refunds', { payment_intent: resa.stripe_payment_intent });
+  } catch (e) { console.error('Remboursement Stripe échoué', resa.id, e.message); }
+  db.prepare("UPDATE reservations SET status='refunded', paid=0 WHERE id=?").run(resa.id);
+  mailRefund(so, resa, reason);
+}
+// Réconciliation ±1 : rembourse le surplus (les dernier·e·s arrivé·e·s du sexe majoritaire)
+async function reconcile(so) {
+  if (!isParity(so)) return;
+  const f = paidCount(so.id, 'Femme'), h = paidCount(so.id, 'Homme');
+  if (f === h) return;
+  const majority = f > h ? 'Femme' : 'Homme';
+  const excess = Math.abs(f - h);
+  const rows = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid' AND genre=? ORDER BY priority ASC, created_at DESC LIMIT ?").all(so.id, majority, excess);
+  for (const r of rows) await refundResa(r, so, 'parite');
+}
+async function cancelSoiree(so, reason) {
+  db.prepare('UPDATE soirees SET actif=0, annulee=1 WHERE id=?').run(so.id);
+  for (const r of db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id)) await refundResa(r, so, 'annulation');
+  for (const r of db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status IN ('waiting','hold')").all(so.id)) {
+    db.prepare("UPDATE reservations SET status='cancelled' WHERE id=?").run(r.id);
+    mailCancel(so, r);
+  }
+  if (NOTIFY_TO && transporter) transporter.sendMail({ from: MAIL_FROM, to: NOTIFY_TO, subject: `Soirée ${so.code} ANNULÉE (effectif insuffisant)`, text: `La soirée ${so.code} (${so.date_texte || ''}) a été auto-annulée à J-24h faute d'effectif. Remboursements lancés.` }).catch(() => {});
+}
+function alert72(so) {
+  if (!NOTIFY_TO || !transporter) return;
+  const detail = isParity(so)
+    ? `Femmes payées : ${paidCount(so.id, 'Femme')}/${minSexe(so)} · Hommes payés : ${paidCount(so.id, 'Homme')}/${minSexe(so)}`
+    : `Payés : ${paidCount(so.id, null)}/${minTotal(so)}`;
+  transporter.sendMail({ from: MAIL_FROM, to: NOTIFY_TO,
+    subject: `⚠ Soirée ${so.code} sous l'effectif minimum (J-72h)`,
+    text: `La soirée ${so.code} (${so.date_texte || ''}) est sous le minimum à 72h.\n${detail}\nIl manque ${deficitTxt(so)}.\n\nEnvoie l'e-mail de relance « il manque X » depuis l'admin (modèle « Relance — il manque des inscrits » déjà prêt). Sans effectif suffisant à 24h, elle sera auto-annulée et tout le monde remboursé.` }).catch(() => {});
+}
+const eventStartMs = (so) => (so.date_start ? new Date(so.date_start).getTime() : NaN);
+async function tick() {
+  const list = db.prepare('SELECT * FROM soirees WHERE actif=1 AND COALESCE(annulee,0)=0').all();
+  const now = nowMs();
+  for (const so of list) {
+    try {
+      if (expireHolds(so)) promote(so);
+      const start = eventStartMs(so);
+      if (!Number.isFinite(start)) continue;
+      const hrs = (start - now) / 3600000;
+      if (hrs <= 72 && hrs > 24 && !so.alert72_sent && !isViable(so)) { alert72(so); db.prepare('UPDATE soirees SET alert72_sent=1 WHERE id=?').run(so.id); }
+      if (hrs <= 24 && hrs > 3 && !isViable(so)) { await cancelSoiree(so, 'non_viable'); continue; }
+      if (hrs <= 3 && !so.reconcile_done) { expireHolds(so); await reconcile(so); db.prepare('UPDATE soirees SET reconcile_done=1 WHERE id=?').run(so.id); }
+    } catch (e) { console.error('tick', so.code, e.message); }
+  }
+}
+if (!process.env.NO_SCHEDULER) setInterval(() => { tick().catch(() => {}); }, 5 * 60 * 1000);
+
+// ---- E-mails liste d'attente / place dispo / remboursement / annulation ----
+function mailWaitlist(so, i) {
+  if (!transporter) return;
+  const prenom = (i.prenom || '').trim() || 'à toi';
+  transporter.sendMail({ from: MAIL_FROM, to: i.email,
+    subject: `Tu es sur la liste d'attente — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''}`,
+    text: `Bonjour ${prenom},\n\nMerci de ton intérêt pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nPour garantir une parité parfaite hommes/femmes, les places de ton profil sont complètes pour le moment. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.\n\nDès qu'une place se libère pour toi, tu reçois un e-mail avec un lien pour la confirmer — tu auras alors 3 heures pour la régler avant qu'elle ne passe à la personne suivante. Rien n'est débité tant que ta place n'est pas garantie.\n\nOn croise les doigts pour toi 💛\nTa team Soirée Match` }).catch(() => {});
+}
+function mailSlotOpen(so, r) {
+  if (!transporter) return;
+  const prenom = (r.prenom || '').trim() || 'à toi';
+  const link = payLink(r.id, r.email);
+  const txt = `Bonjour ${prenom},\n\nBonne nouvelle : une place vient de se libérer pour toi pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nVotre place pour cet événement a été réservée en priorité dans votre ordre d'inscription, cependant nous ne pouvons pas la réserver plus de trois heures pour éviter de bloquer d'autres personnes sur cette même liste.\n\n👉 Confirme et règle ta place ici : ${link}\n\nÀ très vite 💛\nTa team Soirée Match`;
+  const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:520px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55"><p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : une place vient de se libérer pour toi pour la <b>Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''}</b> !</p><p>Votre place pour cet événement a été réservée en priorité dans votre ordre d'inscription, cependant nous ne pouvons pas la réserver plus de trois heures pour éviter de bloquer d'autres personnes sur cette même liste.</p><p><a href="${link}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Confirmer et régler ma place</a></p><p style="font-size:13px;color:#8a9a99">Ce lien expire dans 3 heures.</p><p>À très vite 💛<br>Ta team Soirée Match</p></div>`;
+  transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: `Une place s'est libérée — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} (3h pour confirmer)`, text: txt, html }).catch(() => {});
+}
+function mailRefund(so, r, reason) {
+  if (!transporter) return;
+  const prenom = (r.prenom || '').trim() || 'à toi';
+  const why = reason === 'annulation'
+    ? `la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} a dû être annulée faute d'un effectif suffisant pour garantir une belle soirée`
+    : `nous n'avons pas pu confirmer ta place pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} : il nous manquait une personne du sexe opposé pour garder une parité parfaite`;
+  transporter.sendMail({ from: MAIL_FROM, to: r.email,
+    subject: `Remboursement — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''}`,
+    text: `Bonjour ${prenom},\n\nOn est désolés : ${why}.\n\nTon paiement est intégralement remboursé — il réapparaîtra sur ton moyen de paiement d'ici quelques jours (le délai dépend de ta banque).\n\nOn espère te voir à une prochaine soirée — on t'avertira dès qu'une nouvelle date de ton profil s'ouvre 💛\nTa team Soirée Match` }).catch(() => {});
+}
+function mailCancel(so, r) {
+  if (!transporter) return;
+  const prenom = (r.prenom || '').trim() || 'à toi';
+  transporter.sendMail({ from: MAIL_FROM, to: r.email,
+    subject: `Soirée annulée — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''}`,
+    text: `Bonjour ${prenom},\n\nLa Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} a dû être annulée faute d'un effectif suffisant. Tu n'avais pas encore réglé de place, donc rien n'a été débité.\n\nOn t'avertira dès qu'une nouvelle date de ton profil s'ouvre 💛\nTa team Soirée Match` }).catch(() => {});
+}
+function waitlistPage(so) {
+  return `${siteHead('Liste d\'attente — Soirée Match')}<div class=box><h1>Tu es sur la liste d'attente ⏳</h1><p>Pour garder une <b>parité parfaite</b> hommes/femmes, les places de ton profil sont complètes pour l'instant. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.</p><p>Dès qu'une place se libère pour toi, on t'envoie un e-mail avec un lien — tu auras <b>3 heures</b> pour la confirmer. Aucun paiement n'est demandé tant que ta place n'est pas garantie. 💛</p></div></html>`;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
@@ -1022,14 +1299,19 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, stats());
   }
 
-  // Désinscription (lien public dans les e-mails)
-  if (p === '/unsub' && req.method === 'GET') {
+  // Désinscription : page de confirmation (GET) puis action réelle (POST, ou 1-clic Gmail/Outlook)
+  if (p === '/unsub') {
     const email = url.searchParams.get('e') || '';
     const t = url.searchParams.get('t') || '';
     const good = email ? unsubToken(email) : '';
     const valid = !!good && t.length === good.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(good));
-    if (valid) db.prepare('UPDATE inscriptions SET unsubscribed=1 WHERE lower(email)=lower(?)').run(email);
-    return send(res, 200, unsubPage(valid));
+    if (req.method === 'POST') {
+      await readBody(req);   // consomme le corps (désinscription 1-clic)
+      if (valid) db.prepare('UPDATE inscriptions SET unsubscribed=1 WHERE lower(email)=lower(?)').run(email);
+      return send(res, 200, unsubPage(valid));
+    }
+    if (!valid) return send(res, 200, unsubPage(false));
+    return send(res, 200, unsubConfirmPage(email, t));
   }
 
   // Page de réservation publique : /soiree/CODE
@@ -1083,6 +1365,24 @@ const server = http.createServer(async (req, res) => {
     if (!person || !so) return send(res, 200, pubMsg('Oups', 'Réservation impossible. Réessaie depuis le lien de ton e-mail.'));
     return startReservation(res, so, { prenom: person.prenom, nom: person.nom, email: person.email, tel: person.tel, annee: person.annee, genre: person.genre, recherche: person.recherche });
   }
+  // Confirmer/payer une place proposée depuis la liste d'attente
+  if (p === '/payer' && req.method === 'GET') {
+    const rid = Number(url.searchParams.get('rid') || 0);
+    const email = url.searchParams.get('e') || '';
+    const t = String(url.searchParams.get('t') || '');
+    const good = (rid && email) ? payToken(rid, email) : '';
+    const valid = !!good && t.length === good.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(good));
+    const r = valid ? db.prepare('SELECT * FROM reservations WHERE id=?').get(rid) : null;
+    if (!r) return send(res, 200, pubMsg('Lien invalide', 'Ce lien n\'est plus valable. Écris-nous à contact@soireematch.com.'));
+    if (r.status === 'paid') return send(res, 200, pubMsg('Déjà confirmé', 'Ta place est déjà confirmée. À très vite ! 💛'));
+    if (r.status !== 'hold' || (r.hold_expires && r.hold_expires < nowIso()))
+      return send(res, 200, pubMsg('Délai dépassé', 'Le délai de 3h pour confirmer cette place est écoulé. Si une place se libère à nouveau, on te recontacte. 💛'));
+    const so = getSoireeById(r.soiree_id);
+    if (!so || !so.actif || so.annulee) return send(res, 200, pubMsg('Indisponible', 'Cette soirée n\'est plus disponible.'));
+    if (!PAY_ON) { markPaidAndConfirm(r); return send(res, 200, soireeOkPage(so)); }
+    try { return send(res, 302, '', { Location: await createCheckout(r.id, so, r.email) }); }
+    catch (e) { return send(res, 200, pubMsg('Paiement momentanément indisponible', 'Réessaie dans un instant.')); }
+  }
 
   // Paiement Stripe — retour succès / annulation + webhook
   if (p === '/paiement/ok' && req.method === 'GET') {
@@ -1092,7 +1392,7 @@ const server = http.createServer(async (req, res) => {
         const sess = await stripeApi('GET', '/v1/checkout/sessions/' + encodeURIComponent(sid), null);
         if (sess && sess.payment_status === 'paid') {
           const resa = db.prepare('SELECT * FROM reservations WHERE stripe_session=?').get(sid);
-          if (resa) { markPaidAndConfirm(resa); return send(res, 200, soireeOkPage(getSoireeById(resa.soiree_id) || {})); }
+          if (resa) { markPaidAndConfirm(resa, sess.payment_intent); return send(res, 200, soireeOkPage(getSoireeById(resa.soiree_id) || {})); }
         }
       } catch (e) { console.error('Vérif paiement échouée:', e.message); }
     }
@@ -1108,7 +1408,7 @@ const server = http.createServer(async (req, res) => {
     if (ev && ev.type === 'checkout.session.completed') {
       const sid = ev.data && ev.data.object && ev.data.object.id;
       const resa = sid ? db.prepare('SELECT * FROM reservations WHERE stripe_session=?').get(sid) : null;
-      if (resa) markPaidAndConfirm(resa);
+      if (resa) markPaidAndConfirm(resa, ev.data.object.payment_intent);
     }
     return send(res, 200, 'ok');
   }
@@ -1204,8 +1504,9 @@ const server = http.createServer(async (req, res) => {
       const code = (d.code || '').trim().replace(/\s+/g, '').toLowerCase();
       if (code) {
         try {
-          db.prepare('INSERT INTO soirees(code,date_texte,lieu,prix,actif,created_at,type,tranche) VALUES(?,?,?,?,?,?,?,?)')
-            .run(code, (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, new Date().toISOString(), (d.type || '').trim(), (d.tranche || '').trim());
+          const dstart = (d.date_start || '').trim() ? new Date(d.date_start).toISOString() : null;
+          db.prepare('INSERT INTO soirees(code,date_texte,lieu,prix,actif,created_at,type,tranche,date_start,cap_sexe,min_sexe,cap_total) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+            .run(code, (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, new Date().toISOString(), (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 10, Number(d.cap_total) || 30);
         } catch { /* code déjà utilisé */ }
       }
       return send(res, 302, '', { Location: '/admin/soirees' });
@@ -1219,8 +1520,9 @@ const server = http.createServer(async (req, res) => {
       const d = parseForm(await readBody(req));
       const id = Number(d.id);
       if (id) try {
-        db.prepare('UPDATE soirees SET code=?,date_texte=?,lieu=?,prix=?,actif=?,type=?,tranche=? WHERE id=?')
-          .run((d.code || '').trim().replace(/\s+/g, '').toLowerCase(), (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, (d.type || '').trim(), (d.tranche || '').trim(), id);
+        const dstart = (d.date_start || '').trim() ? new Date(d.date_start).toISOString() : null;
+        db.prepare('UPDATE soirees SET code=?,date_texte=?,lieu=?,prix=?,actif=?,type=?,tranche=?,date_start=?,cap_sexe=?,min_sexe=?,cap_total=? WHERE id=?')
+          .run((d.code || '').trim().replace(/\s+/g, '').toLowerCase(), (d.date_texte || '').trim(), (d.lieu || '').trim(), (d.prix || '').trim(), d.actif ? 1 : 0, (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 10, Number(d.cap_total) || 30, id);
       } catch { /* code en conflit */ }
       return send(res, 302, '', { Location: '/admin/soirees' });
     }
@@ -1232,13 +1534,24 @@ const server = http.createServer(async (req, res) => {
     if (p === '/admin/soirees/reservations' && req.method === 'GET') {
       const s = getSoireeById(Number(url.searchParams.get('id')));
       if (!s) return send(res, 302, '', { Location: '/admin/soirees' });
-      return send(res, 200, reservationsPage(s));
+      return send(res, 200, reservationsPage(s, url.searchParams.get('done')));
     }
     if (p === '/admin/soirees/reservations/export' && req.method === 'GET') {
       const s = getSoireeById(Number(url.searchParams.get('id')));
       if (!s) return send(res, 302, '', { Location: '/admin/soirees' });
       const rows = db.prepare('SELECT * FROM reservations WHERE soiree_id=? ORDER BY id DESC').all(s.id);
       return send(res, 200, resaCSV(rows), { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="resa-${s.code}.csv"` });
+    }
+    if (p === '/admin/soirees/run-checks' && req.method === 'POST') {
+      const id = Number(parseForm(await readBody(req)).id);
+      await tick();
+      return send(res, 302, '', { Location: id ? `/admin/soirees/reservations?id=${id}&done=1` : '/admin/soirees' });
+    }
+    if (p === '/admin/soirees/cancel' && req.method === 'POST') {
+      const id = Number(parseForm(await readBody(req)).id);
+      const s = id && getSoireeById(id);
+      if (s && !s.annulee) await cancelSoiree(s, 'manuel');
+      return send(res, 302, '', { Location: id ? `/admin/soirees/reservations?id=${id}&done=1` : '/admin/soirees' });
     }
 
     // Éditer une fiche
