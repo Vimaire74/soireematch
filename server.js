@@ -412,7 +412,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
   lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
   const dateTxt = (so && so.date_texte) ? so.date_texte : '';
   const lieuTxt = (so && so.lieu) ? so.lieu : '';
-  const manqueTxt = so ? deficitTxt(so) : '';
+  const manqueTxt = so ? deficitTxt(so) : 'quelques personnes';
   const allSoirees = (soireesForList && soireesForList.length) ? soireesForList : db.prepare('SELECT * FROM soirees WHERE actif=1 ORDER BY id DESC').all();
   for (const r of recipients) {
     const prenom = (r.prenom || '').trim() || 'à toi';
@@ -421,25 +421,24 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const eligibles = forceEligible ? allSoirees : allSoirees.filter((so2) => eligibleForSoiree(r, so2));
     const aucune = "Aucune date ne correspond à ton profil pour le moment — on t'écrit dès qu'une nouvelle soirée s'ouvre pour toi.";
     const sT = eligibles.length
-      ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${so2.lieu ? ' — ' + so2.lieu : ''}\n  👉 Réserver : ${resaLinkSoiree(r.email, so2.code)}`).join('\n\n')
+      ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${soireeMetaShort(so2) ? ' · ' + soireeMetaShort(so2) : ''}${so2.lieu ? '\n  ' + so2.lieu : ''}\n  👉 Réserver : ${resaLinkSoiree(r.email, so2.code)}`).join('\n\n')
       : aucune;
     const sH = eligibles.length
-      ? eligibles.map((so2) => `<div style="margin:10px 0"><b>${esc(`${so2.date_texte || so2.code}${so2.lieu ? ' — ' + so2.lieu : ''}`)}</b> — <a href="${resaLinkSoiree(r.email, so2.code)}" style="color:#2f7d8a;font-weight:600">Réserver ma place</a></div>`).join('')
-      : `<div style="margin:10px 0;color:#8a9a99">${esc(aucune)}</div>`;
-    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateTxt).replace(/\{lieu\}/gi, lieuTxt).replace(/\{manque\}/gi, manqueTxt).replace(/\{soirees\}/gi, sT);
+      ? eligibles.map((so2) => `<div style="background:#ffffff;border:1px solid #57a893;border-left:4px solid #d0aa54;border-radius:10px;padding:14px 16px;margin:14px 0"><div style="font-weight:700;color:#156b54;font-size:16px">${esc(so2.date_texte || so2.code)}</div><div style="color:#5b6b64;font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so2))}${so2.lieu ? ' · ' + esc(so2.lieu) : ''}</div><a href="${resaLinkSoiree(r.email, so2.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:22px;font-weight:600;font-size:14px">Réserver ma place</a></div>`).join('')
+      : `<div style="margin:12px 0;color:#8a9a99">${esc(aucune)}</div>`;
+    const dateR = eligibles.length ? eligibles.map((x) => x.date_texte || x.code).join(' ou le ') : dateTxt;
+    const lieuR = eligibles.length ? (eligibles[0].lieu || '') : lieuTxt;
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque\}/gi, manqueTxt).replace(/\{soirees\}/gi, sT);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
-    const btn = `<a href="${resa}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Je réserve ma place</a>`;
+    const btn = `<a href="${resa}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réserve ma place</a>`;
     const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
-      .replace(/\{date\}/gi, esc(dateTxt)).replace(/\{lieu\}/gi, esc(lieuTxt)).replace(/\{manque\}/gi, esc(manqueTxt))
+      .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque\}/gi, esc(manqueTxt))
       .replace(/\{soirees\}/gi, sH)
       .replace(/\n/g, '<br>');
-    const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:540px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55">`
-      + htmlBody
-      + `<hr style="border:none;border-top:1px solid #e0e0e0;margin:22px 0">`
-      + `<p style="font-size:12px;color:#8a9a99">Tu reçois cet e-mail car tu t'es inscrit(e) à la Soirée Match. <a href="${unsub}" style="color:#8a9a99">Se désinscrire</a>.</p></div>`;
+    const html = emailShell(htmlBody, unsub);
     try {
       await transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: subj, text: txt, html,
         headers: {
@@ -884,115 +883,45 @@ Ta team Soirée Match 💛`;
 
 const TEMPLATES = [
   {
-    name: 'Prochaine soirée — hétéro (avec parité)',
-    subject: 'La prochaine Soirée Match hétéro 30-40 ans a lieu le {date}',
+    name: 'Prochaines soirées (référence)',
+    subject: 'La prochaine Soirée Match approche — viens tenter ta chance',
     body: `Bonjour {prenom},
 
-Ta prochaine date pour faire des rencontres est fixée : ce sera le {date}. La soirée commence à 20h30.
+La prochaine Soirée Match approche, et c'est l'occasion rêvée de faire de belles rencontres, en vrai. Laisse les applis de côté et viens tenter ta chance : pas besoin de savoir quoi dire, nos jeux s'occupent de briser la glace pour toi — tu n'as qu'à venir avec le sourire.
 
-Pour réserver ta place : {reserver}
-
-Nous nous réjouissons de ta présence et espérons que tu passeras une soirée géniale à faire des connaissances — et à matcher !
-
-Comment ça marche : toutes les inscriptions sont équilibrées pour garantir une égalité parfaite hommes/femmes (par ex. 8/8, 10/10 ou 15/15). L'ordre d'inscription compte : les places sont validées dans l'ordre d'arrivée. Tu peux payer et confirmer ta place dès qu'une place est disponible pour ton profil ; sinon, tu es placé sur liste d'attente et tu reçois un lien pour payer dès qu'une place se libère (tu as alors 3h). Il y a un nombre minimal et maximal de participants, et tu es tenu au courant automatiquement par e-mail à chaque évolution.
-
-Si tu t'inscris au dernier moment, ta place peut rester en attente tant qu'une personne du sexe opposé ne s'est pas inscrite — comme ça, tu ne te retrouves jamais seul dans ton coin.
-
-Un souci technique avec le site ou le formulaire ? Écris-nous à contact@soireematch.com. Et pour être sûr de recevoir nos messages, ajoute cette adresse à tes contacts.
-
-Au plaisir de t'y voir,
-L'équipe Soirée Match`,
-  },
-  {
-    name: 'Prochaine soirée — gay / lesbiennes (sans parité)',
-    subject: 'La prochaine Soirée Match (entre hommes / entre femmes) a lieu le {date}',
-    body: `Bonjour {prenom},
-
-Ta prochaine date pour faire des rencontres est fixée : ce sera le {date}. La soirée commence à 20h30.
-
-Pour réserver ta place : {reserver}
-
-Nous nous réjouissons de ta présence et espérons que tu passeras une soirée géniale à faire des connaissances — et à matcher !
-
-Le nombre de places est limité et les réservations se font dans l'ordre d'arrivée : tu peux payer et confirmer ta place tout de suite, sans attendre. Si la soirée est complète, tu es placé sur liste d'attente et prévenu par e-mail dès qu'une place se libère.
-
-Un souci technique avec le site ou le formulaire ? Écris-nous à contact@soireematch.com. Et pour être sûr de recevoir nos messages, ajoute cette adresse à tes contacts.
-
-Au plaisir de t'y voir,
-L'équipe Soirée Match`,
-  },
-  {
-    name: 'Hommes → cherchent une femme',
-    subject: '{prenom}, et si c\'était le {date} ?',
-    body: `Bonjour {prenom},
-
-La prochaine Soirée Match approche, et c'est l'occasion rêvée de faire de belles rencontres en vrai. Des femmes intéressantes et bienveillantes seront présentes le {date} — laisse les applis de côté et viens tenter ta chance. Pas besoin d'être un grand séducteur : nos jeux s'occupent de briser la glace pour toi, tu n'as qu'à venir avec le sourire.
-
-${PRATIQUE}
-
-${SIGNOFF}`,
-  },
-  {
-    name: 'Femmes → cherchent un homme',
-    subject: '{prenom}, une soirée pensée pour de vraies rencontres — le {date}',
-    body: `Bonjour {prenom},
-
-On aimerait beaucoup te voir à la prochaine Soirée Match, le {date}. On met un point d'honneur à créer un cadre respectueux et bienveillant, avec des hommes venus pour de vraies rencontres — et une soirée animée par un thérapeute pour que chacune se sente à l'aise. Tu viens comme tu es, on s'occupe du reste.
-
-${PRATIQUE}
-
-${SIGNOFF}`,
-  },
-  {
-    name: 'Rencontres gay — entre hommes',
-    subject: '{prenom}, Soirée Match entre hommes : rendez-vous le {date}',
-    body: `Bonjour {prenom},
-
-La prochaine Soirée Match dédiée aux rencontres entre hommes arrive : le {date}. Une soirée décontractée pour se rencontrer en vrai, rire et créer des liens — loin des applis et de leurs déceptions.
-
-${PRATIQUE}
-
-${SIGNOFF}`,
-  },
-  {
-    name: 'Rencontres gay — entre femmes',
-    subject: '{prenom}, Soirée Match entre femmes : rendez-vous le {date}',
-    body: `Bonjour {prenom},
-
-La prochaine Soirée Match dédiée aux rencontres entre femmes arrive : le {date}. Une soirée chaleureuse et bienveillante pour se rencontrer en vrai, échanger et faire de belles rencontres — sans applis, sans faux-semblants.
-
-${PRATIQUE}
-
-${SIGNOFF}`,
-  },
-  {
-    name: 'Général — plusieurs soirées (multi-dates)',
-    subject: 'Les prochaines Soirées Match sont ouvertes',
-    body: `Bonjour {prenom},
-
-Voici les prochaines Soirées Match qui te concernent — clique sur celle qui te tente pour réserver ta place :
+Voici les dates faites pour toi — clique sur celle qui te tente :
 
 {soirees}
 
-Les places sont attribuées dans l'ordre d'inscription : tu peux payer et confirmer dès qu'une place est disponible pour ton profil ; sinon tu passes en liste d'attente et reçois un lien pour payer dès qu'une place se libère. Tu es tenu au courant automatiquement par e-mail à chaque évolution.
+Au programme : des jeux intelligents pour se découvrir, se comprendre vraiment et briser la glace, de la musique, quelques fous rires, et surtout de vraies rencontres humaines autour d'un verre — sans applis, sans rejet, sans faux-semblants.
 
-Un souci technique avec le site ou le formulaire ? Écris-nous à contact@soireematch.com. Et pour être sûr de recevoir nos messages, ajoute cette adresse à tes contacts.
+Un petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !
 
-Au plaisir de t'y voir,
+Comment ça se passe : les places partent dans l'ordre d'inscription. Dès qu'une place est libre pour ton profil — pour les soirées hétéro, cela veut dire qu'il y a autant de femmes que d'hommes inscrits, pour que personne ne se retrouve seul(e) dans son coin — tu peux la régler et la confirmer tout de suite. Sinon, tu passes en liste d'attente et on t'envoie un lien pour payer dès qu'une place se libère. Tu es tenu(e) au courant automatiquement par e-mail à chaque étape.
+
+Une question ou un souci technique ? Écris-nous à contact@soireematch.com — et ajoute cette adresse à tes contacts pour être sûr(e) de ne rien manquer.
+
+On a hâte de t'y voir,
 L'équipe Soirée Match`,
   },
   {
     name: 'Relance — il manque des inscrits',
-    subject: 'Il reste des places pour la Soirée Match du {date} 💛',
+    subject: 'Il reste des places pour nos prochaines soirées',
     body: `Bonjour {prenom},
 
-La prochaine Soirée Match approche — {date}, {lieu} — et il nous manque encore {manque} pour garantir une parité parfaite et une belle soirée.
+Nos prochaines soirées approchent, et il nous manque encore {manque} pour garantir une belle parité et une soirée réussie.
 
-Si tu hésitais : c'est le moment idéal. Et si quelqu'un autour de toi pourrait aimer, transmets-lui ce message — nos plus belles soirées naissent du bouche-à-oreille.
+Si tu hésitais, c'est le moment idéal — et si quelqu'un autour de toi pourrait aimer, transmets-lui ce message : nos plus belles soirées naissent du bouche-à-oreille.
 
-{reserver}
+Voici les dates qui te concernent :
 
-À très vite,
+{soirees}
+
+Les places partent dans l'ordre d'inscription. Dès qu'une place est libre pour ton profil — pour les soirées hétéro, dès qu'il y a autant de femmes que d'hommes — tu peux la régler ; sinon tu passes en liste d'attente et on te prévient dès qu'une place se libère.
+
+Une question ? Écris-nous à contact@soireematch.com — et ajoute cette adresse à tes contacts pour ne rien manquer.
+
+On a hâte de t'y voir,
 L'équipe Soirée Match`,
   },
 ];
@@ -1152,12 +1081,28 @@ function formatFr(iso) {
   const hh = String(d.getUTCHours()).padStart(2, '0'), mm = String(d.getUTCMinutes()).padStart(2, '0');
   return `${FR_DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${FR_MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()} à ${hh}h${mm}`;
 }
+function soireeMetaShort(so) {
+  const p = [];
+  if (so.tranche) p.push(`${so.tranche} ans (±3)`);
+  const t = { 'Hétéro': 'hétéro', 'Gay hommes': 'entre hommes', 'Gay femmes': 'entre femmes' }[so.type];
+  if (t) p.push(t);
+  return p.join(' · ');
+}
+function emailShell(inner, unsub) {
+  const tile = `${SITE_URL}/zellige-email.png`;
+  return `<div style="background:#f5faf8;padding:24px 12px;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif"><div style="max-width:560px;margin:auto;background:#ffffff;border:1px solid #d7e6df;border-radius:14px;overflow:hidden">`
+  + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr><td background="${tile}" bgcolor="#156b54" style="background-color:#156b54;background-image:url('${tile}');background-repeat:repeat;padding:34px 28px;text-align:center;border-bottom:3px solid #d0aa54"><div style="font-size:30px;font-weight:800;letter-spacing:.5px;color:#d0aa54">Soirée Match</div><div style="color:#d0aa54;font-size:12px;letter-spacing:2px;margin-top:9px">RENCONTRES CÉLIBATAIRES · LAUSANNE</div></td></tr></table>`
+  + `<div style="padding:28px;color:#1b2a24;font-size:15px;line-height:1.6">${inner}</div>`
+  + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr><td background="${tile}" bgcolor="#156b54" style="background-color:#156b54;background-image:url('${tile}');background-repeat:repeat;padding:24px 28px;text-align:center"><div style="color:#d0aa54;font-size:17px;font-weight:700;letter-spacing:.6px">soireematch.com</div><div style="margin-top:12px;font-size:12px;color:#cfe6db;line-height:1.6">Tu reçois cet e-mail car tu t'es inscrit(e) à la Soirée Match.<br><a href="${unsub}" style="color:#e8d39a">Se désinscrire</a> · <a href="mailto:contact@soireematch.com" style="color:#e8d39a">contact@soireematch.com</a></td></tr></table>`
+  + `</div></div>`;
+}
 const isParity = (so) => (so.type === 'Hétéro');
 const otherGenre = (g) => (g === 'Femme' ? 'Homme' : 'Femme');
 const capSexe = (so) => (Number(so.cap_sexe) > 0 ? Number(so.cap_sexe) : 15);
 const minSexe = (so) => (Number(so.min_sexe) > 0 ? Number(so.min_sexe) : 8);
 const capTotal = (so) => (Number(so.cap_total) > 0 ? Number(so.cap_total) : 30);
 const minTotal = (so) => (Number(so.min_total) > 0 ? Number(so.min_total) : 10);
+const LEAD_MAX = 3;   // parité : un sexe peut mener de 3 au maximum, ensuite liste d'attente
 
 function paidCount(soId, genre) {
   return genre
@@ -1176,7 +1121,7 @@ function holdCount(soId, genre) {
 function slotOpen(so, genre) {
   if (isParity(so)) {
     const held = paidCount(so.id, genre) + holdCount(so.id, genre);
-    return held < capSexe(so) && held <= paidCount(so.id, otherGenre(genre));
+    return held < capSexe(so) && (held - paidCount(so.id, otherGenre(genre))) < LEAD_MAX;
   }
   const heldT = paidCount(so.id, null) + holdCount(so.id, null);
   return heldT < capTotal(so);
