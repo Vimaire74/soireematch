@@ -585,9 +585,10 @@ function adminPage(query) {
   if (fg) { sql += ' AND genre = ?'; args.push(fg); }
   if (fr) { sql += ' AND recherche = ?'; args.push(fr); }
   if (fl) { sql += ' AND langues LIKE ?'; args.push(`%${fl}%`); }
-  if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} < ?`; args.push(lo, hi); }
+  if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} <= ?`; args.push(lo - 3, hi + 3); }
   sql += ' ORDER BY id DESC';
   const rows = db.prepare(sql).all(...args);
+  const selF = rows.filter((r) => r.genre === 'Femme').length, selH = rows.filter((r) => r.genre === 'Homme').length;
   const s = stats();
   const opt = (v, cur) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`;
   const genreCards = s.byGenre.map((g) => `<div class=card><div class=n>${g.n}</div><div class=l>${esc(g.genre || '—')}</div></div>`).join('');
@@ -630,11 +631,13 @@ function adminPage(query) {
     <form id=act method=post></form>
     <div class=bar>
       <a href="/admin/compose"><button type=button>✉ Écrire aux inscrits</button></a>
+      <a href="/admin/test"><button type=button class=sec>🧪 E-mail de test</button></a>
       <button form=act formaction=/admin/export>⬇ Exporter la sélection (CSV)</button>
       <a href="/admin/export?all=1${q || fg || fr || fl || ft ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) + '&langue=' + encodeURIComponent(fl) + '&tranche=' + encodeURIComponent(ft) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
       <button form=act formaction=/admin/delete class=danger onclick="return confirm('Supprimer les inscriptions sélectionnées ?')">🗑 Supprimer la sélection</button>
     </div>
 
+    <div style="margin:6px 0 12px;padding:10px 14px;background:#eaf3f2;border:1px solid var(--line);border-radius:10px;font-size:.92rem">Sélection affichée : <b>${rows.length}</b> personne(s) — <b>${selF}</b> femme(s) · <b>${selH}</b> homme(s)${ft ? ` <span style=\"color:var(--muted)\">(tranche ${esc(ft)} ans · souplesse ±3)</span>` : ''}</div>
     ${rows.length ? `<table>
       <tr><th><input type=checkbox onclick="document.querySelectorAll('input[name=ids]').forEach(c=>c.checked=this.checked)"></th>
       <th>Date</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Tél</th><th>Année</th><th>Genre</th><th>Recherche</th><th>Langues</th><th>Actions</th></tr>
@@ -885,6 +888,7 @@ function composePage() {
   <div class=wrap>
     <a class=back href="/admin">← Retour aux inscriptions</a>
     <h2>Écrire aux inscrits</h2>
+    <p class=hint>Pour t'envoyer un e-mail de test à toi seul (sans aucun risque pour la liste), utilise la <a href="/admin/test"><b>page d'e-mail de test</b></a>.</p>
     ${off ? '<div class=panel style="border-color:#e0b4b0;color:#c0392b">⚠ L\'envoi d\'e-mails est désactivé (MAIL_USER / MAIL_PASS non définis dans Coolify).</div>' : ''}
     <form class=panel method=post action=/admin/send onsubmit="return confirm('Envoyer cet e-mail au segment choisi ?')">
       <label>Modèle</label>
@@ -908,8 +912,6 @@ function composePage() {
       <label>Message</label>
       <textarea id=body name=body rows=14 required placeholder="Bonjour {prenom},&#10;&#10;…"></textarea>
       <p class=hint>Repères : <b>{prenom}</b> = le prénom de chacun · <b>{reserver}</b> = bouton personnalisé « Je réserve ma place » (chaque personne arrive sur une page qui lui montre <b>automatiquement les soirées qui la concernent</b> selon son âge, son sexe et qui elle cherche — réservation en un clic). <b>{lien}</b> = un lien fixe vers la soirée liée ci-dessus, ou le site. <b>{date}</b> et <b>{lieu}</b> = la date et le lieu de la soirée liée (se remplissent tout seuls). <b>{soirees}</b> = la liste de toutes les soirées à venir, avec un lien « Réserver » uniquement pour celles qui concernent la personne (les autres affichées sans lien). Un lien de désinscription est ajouté automatiquement en bas.</p>
-      <label>Adresse de test <span class=hint>(si rempli, l'e-mail part UNIQUEMENT à cette adresse — pour te tester toi-même)</span></label>
-      <input name=test_email type=email placeholder="ex. marc@guerir.ch" style="width:100%">
       <div style="margin-top:14px"><button ${off ? 'disabled' : ''}>Envoyer</button></div>
     </form>
   </div>
@@ -920,6 +922,42 @@ function composePage() {
       const subj = document.getElementById('subject'), body = document.getElementById('body');
       if ((subj.value || body.value) && !confirm('Remplacer l\\'objet et le message par ce modèle ?')) { e.target.value = '-1'; return; }
       subj.value = TPL[i].subject; body.value = TPL[i].body;
+    });
+  </script></html>`;
+}
+
+function testComposePage(done) {
+  const off = !transporter;
+  const soirees = db.prepare('SELECT code,date_texte FROM soirees WHERE actif=1 ORDER BY id DESC').all();
+  const defaultAddr = /@/.test(ADMIN_USER) ? ADMIN_USER : '';
+  return `${pageHead('E-mail de test')}
+  <div class=wrap>
+    <a class=back href="/admin/compose">← Retour à l'envoi normal</a>
+    <h2>🧪 E-mail de test</h2>
+    <div class=panel style="border-color:#8fbf8f;background:#eefaee;color:#1c7a3f;margin-bottom:14px"><b>Zéro risque d'envoi de masse ici.</b> Cette page envoie l'e-mail <b>uniquement</b> à l'adresse indiquée ci-dessous. La liste des inscrits n'est jamais utilisée.</div>
+    ${done ? `<div class=panel style="border-color:#8fbf8f;background:#eefaee;color:#1c7a3f;margin-bottom:14px">✅ E-mail de test envoyé à <b>${esc(done)}</b>. Va vérifier ta boîte (pense aux spams).</div>` : ''}
+    ${off ? '<div class=panel style="border-color:#e0b4b0;color:#c0392b">⚠ L\'envoi d\'e-mails est désactivé (MAIL_USER / MAIL_PASS non définis).</div>' : ''}
+    <form class=panel method=post action=/admin/test/send onsubmit="return confirm('Envoyer ce test à cette seule adresse ?')">
+      <label>Modèle</label>
+      <select id=tpl><option value="-1">— Partir d'un modèle… —</option>${TEMPLATES.map((t, i) => `<option value=${i}>${esc(t.name)}</option>`).join('')}</select>
+      <label>Soirée liée <span class=hint>(pour {lien}, {date}, {lieu}, {reserver}, {soirees})</span></label>
+      <select name=soiree><option value="">— Aucune —</option>${soirees.map((so2) => `<option value="${esc(so2.code)}">${esc(so2.date_texte || so2.code)} (${esc(so2.code)})</option>`).join('')}</select>
+      <label>Objet</label>
+      <input id=subject name=subject required style="width:100%">
+      <label>Message</label>
+      <textarea id=body name=body rows=14 required></textarea>
+      <p class=hint>Repères : <b>{prenom}</b>, <b>{reserver}</b>, <b>{lien}</b>, <b>{date}</b>, <b>{lieu}</b>, <b>{soirees}</b>. Si l'adresse de test correspond à un inscrit, la personnalisation (soirées éligibles, liens 1-clic) est réelle.</p>
+      <label>Destinataire UNIQUE — ton adresse <span class=hint>(obligatoire)</span></label>
+      <input name=test_email type=email required value="${esc(defaultAddr)}" style="width:100%;border:2px solid #2f7d8a">
+      <div style="margin-top:14px"><button ${off ? 'disabled' : ''}>Envoyer le test (à cette seule adresse)</button></div>
+    </form>
+  </div>
+  <script>
+    const TPL = ${JSON.stringify(TEMPLATES)};
+    document.getElementById('tpl').addEventListener('change', function(e){
+      const i = +e.target.value; if (i < 0) return;
+      document.getElementById('subject').value = TPL[i].subject;
+      document.getElementById('body').value = TPL[i].body;
     });
   </script></html>`;
 }
@@ -1104,7 +1142,7 @@ const server = http.createServer(async (req, res) => {
         if (fg) { sql += ' AND genre=?'; args.push(fg); }
         if (fr) { sql += ' AND recherche=?'; args.push(fr); }
         if (fl) { sql += ' AND langues LIKE ?'; args.push(`%${fl}%`); }
-        if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} < ?`; args.push(lo, hi); }
+        if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} <= ?`; args.push(lo - 3, hi + 3); }
         sql += ' ORDER BY id DESC';
         rows = db.prepare(sql).all(...args);
       } else {
@@ -1139,18 +1177,24 @@ const server = http.createServer(async (req, res) => {
       const so = (d.soiree || '').trim() ? getSoiree((d.soiree || '').trim()) : null;
       const linkUrl = so ? soireeLink(so.code) : SITE_URL;
       const auto = (d.auto === 'on' || d.auto === '1');
-      const testEmail = (d.test_email || '').trim();
-      let recips;
-      if (testEmail) {
-        const row = db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE lower(email)=lower(?)').get(testEmail);
-        recips = [row || { prenom: 'Test', email: testEmail, genre: '', recherche: '', annee: 0, langues: '' }];
-      } else if (auto && so) {
-        recips = db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0').all().filter((p) => eligibleForSoiree(p, so));
-      } else {
-        recips = recipientsFor({ genre, recherche, tranche });
-      }
+      const recips = (auto && so)
+        ? db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0').all().filter((p) => eligibleForSoiree(p, so))
+        : recipientsFor({ genre, recherche, tranche });
       runCampaign(recips, subject, body, linkUrl, so);   // en arrière-plan (non bloquant)
       return send(res, 302, '', { Location: '/admin' });
+    }
+    if (p === '/admin/test' && req.method === 'GET') return send(res, 200, testComposePage(url.searchParams.get('done') || ''));
+    if (p === '/admin/test/send' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      const subject = (d.subject || '').trim(), body = (d.body || '').trim();
+      const testEmail = (d.test_email || '').trim();
+      if (!transporter || !subject || !body || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(testEmail)) return send(res, 302, '', { Location: '/admin/test' });
+      const so = (d.soiree || '').trim() ? getSoiree((d.soiree || '').trim()) : null;
+      const linkUrl = so ? soireeLink(so.code) : SITE_URL;
+      const row = db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE lower(email)=lower(?)').get(testEmail);
+      const recips = [row || { prenom: 'Test', email: testEmail, genre: '', recherche: '', annee: 0, langues: '' }];
+      runCampaign(recips, subject, body, linkUrl, so);
+      return send(res, 302, '', { Location: '/admin/test?done=' + encodeURIComponent(testEmail) });
     }
 
     // Gestion des soirées
