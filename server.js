@@ -839,7 +839,7 @@ function reservationsPage(s, done) {
   const cnt = (st, g) => list.filter((r) => r.status === st && (!g || r.genre === g)).length;
   const par = isParity(s);
   const lbl = { paid: '✅ payé', hold: '⏳ à confirmer (3h)', waiting: "🕒 liste d'attente", refunded: '↩ remboursé', expired: '✕ expiré', cancelled: '✕ annulé' };
-  const rows = list.map((r, i) => `<tr><td>${i + 1}</td><td>${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.genre)}</td><td>${lbl[r.status] || esc(r.status || '')}</td></tr>`).join('');
+  const rows = list.map((r, i) => `<tr><td>${i + 1}</td><td>${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.genre)}</td><td>${lbl[r.status] || esc(r.status || '')}</td><td>${['paid', 'hold', 'waiting'].includes(r.status) ? `<form method=post action=/admin/soirees/resa/remove style="margin:0" onsubmit="return confirm('Retirer ${esc((r.prenom || '') + ' ' + (r.nom || ''))} ?${r.status === 'paid' ? ' Cette personne sera remboursée.' : ''}')"><input type=hidden name=id value=${r.id}><button class=danger style="padding:4px 10px;font-size:12px">Retirer</button></form>` : ''}</td></tr>`).join('');
   const viable = isViable(s);
   const capLine = par
     ? `Parité stricte — <b>${cnt('paid', 'Femme')}</b> F / <b>${cnt('paid', 'Homme')}</b> H payés · min ${minSexe(s)}/sexe · max ${capSexe(s)}/sexe · ${viable ? '<span style="color:#1c7a3f">✔ viable</span>' : `<span style="color:#c0392b">✘ sous le minimum (manque ${esc(deficitTxt(s))})</span>`}`
@@ -862,7 +862,7 @@ function reservationsPage(s, done) {
       <form method=post action=/admin/soirees/run-checks style="display:inline"><input type=hidden name=id value=${s.id}><button class=sec>🔄 Lancer les vérifications</button></form>
       ${s.annulee ? '' : `<form method=post action=/admin/soirees/cancel style="display:inline" onsubmit="return confirm('Annuler la soirée et rembourser toutes les places payées ?')"><input type=hidden name=id value=${s.id}><button class=danger>✕ Annuler + rembourser</button></form>`}
     </div>
-    ${list.length ? `<table><tr><th>#</th><th>Inscrit</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Genre</th><th>Statut</th></tr>${rows}</table>`
+    ${list.length ? `<table><tr><th>#</th><th>Inscrit</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Genre</th><th>Statut</th><th>Action</th></tr>${rows}</table>`
       : `<div class=empty>Aucune réservation pour l'instant.</div>`}
   </div></html>`;
 }
@@ -1566,6 +1566,18 @@ const server = http.createServer(async (req, res) => {
       const s = id && getSoireeById(id);
       if (s && !s.annulee) await cancelSoiree(s, 'manuel');
       return send(res, 302, '', { Location: id ? `/admin/soirees/reservations?id=${id}&done=1` : '/admin/soirees' });
+    }
+    if (p === '/admin/soirees/resa/remove' && req.method === 'POST') {
+      const id = Number(parseForm(await readBody(req)).id);
+      const r = id && db.prepare('SELECT * FROM reservations WHERE id=?').get(id);
+      if (!r) return send(res, 302, '', { Location: '/admin/soirees' });
+      if (r.status === 'paid' && PAY_ON && r.stripe_payment_intent) {
+        try { await stripeApi('POST', '/v1/refunds', { payment_intent: r.stripe_payment_intent }); } catch (e) { console.error('Remboursement (retrait admin) échoué', id, e.message); }
+      }
+      db.prepare("UPDATE reservations SET status='cancelled', paid=0 WHERE id=?").run(id);
+      const so = getSoireeById(r.soiree_id);
+      if (so) promote(so);
+      return send(res, 302, '', { Location: `/admin/soirees/reservations?id=${r.soiree_id}&done=1` });
     }
 
     // Éditer une fiche
