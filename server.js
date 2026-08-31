@@ -418,18 +418,14 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const prenom = (r.prenom || '').trim() || 'à toi';
     const unsub = unsubLink(r.email);
     const resa = resaLink(r.email);
-    const sT = allSoirees.map((so2) => {
-      const label = `${so2.date_texte || so2.code}${so2.lieu ? ' — ' + so2.lieu : ''}`;
-      return eligibleForSoiree(r, so2)
-        ? `• ${label}\n  👉 Réserver : ${resaLinkSoiree(r.email, so2.code)}`
-        : `• ${label} — ${soireeAudience(so2)}`;
-    }).join('\n\n');
-    const sH = allSoirees.map((so2) => {
-      const label = esc(`${so2.date_texte || so2.code}${so2.lieu ? ' — ' + so2.lieu : ''}`);
-      return eligibleForSoiree(r, so2)
-        ? `<div style="margin:10px 0"><b>${label}</b> — <a href="${resaLinkSoiree(r.email, so2.code)}" style="color:#2f7d8a;font-weight:600">Réserver ma place</a></div>`
-        : `<div style="margin:10px 0;color:#8a9a99">${label} — ${esc(soireeAudience(so2))}</div>`;
-    }).join('');
+    const eligibles = allSoirees.filter((so2) => eligibleForSoiree(r, so2));
+    const aucune = "Aucune date ne correspond à ton profil pour le moment — on t'écrit dès qu'une nouvelle soirée s'ouvre pour toi.";
+    const sT = eligibles.length
+      ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${so2.lieu ? ' — ' + so2.lieu : ''}\n  👉 Réserver : ${resaLinkSoiree(r.email, so2.code)}`).join('\n\n')
+      : aucune;
+    const sH = eligibles.length
+      ? eligibles.map((so2) => `<div style="margin:10px 0"><b>${esc(`${so2.date_texte || so2.code}${so2.lieu ? ' — ' + so2.lieu : ''}`)}</b> — <a href="${resaLinkSoiree(r.email, so2.code)}" style="color:#2f7d8a;font-weight:600">Réserver ma place</a></div>`).join('')
+      : `<div style="margin:10px 0;color:#8a9a99">${esc(aucune)}</div>`;
     const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateTxt).replace(/\{lieu\}/gi, lieuTxt).replace(/\{manque\}/gi, manqueTxt).replace(/\{soirees\}/gi, sT);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
@@ -970,6 +966,22 @@ ${PRATIQUE}
 ${SIGNOFF}`,
   },
   {
+    name: 'Général — plusieurs soirées (multi-dates)',
+    subject: 'Les prochaines Soirées Match sont ouvertes',
+    body: `Bonjour {prenom},
+
+Voici les prochaines Soirées Match qui te concernent — clique sur celle qui te tente pour réserver ta place :
+
+{soirees}
+
+Les places sont attribuées dans l'ordre d'inscription : tu peux payer et confirmer dès qu'une place est disponible pour ton profil ; sinon tu passes en liste d'attente et reçois un lien pour payer dès qu'une place se libère. Tu es tenu au courant automatiquement par e-mail à chaque évolution.
+
+Un souci technique avec le site ou le formulaire ? Écris-nous à contact@soireematch.com. Et pour être sûr de recevoir nos messages, ajoute cette adresse à tes contacts.
+
+Au plaisir de t'y voir,
+L'équipe Soirée Match`,
+  },
+  {
     name: 'Relance — il manque des inscrits',
     subject: 'Il reste des places pour la Soirée Match du {date} 💛',
     body: `Bonjour {prenom},
@@ -1334,6 +1346,15 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/stats' && req.method === 'GET') {
     if (!REPORT_TOKEN || url.searchParams.get('token') !== REPORT_TOKEN) return json(res, 401, { ok: false });
     return json(res, 200, stats());
+  }
+
+  // Liste publique des soirées à afficher sur le site (à venir + passées depuis moins de 7 jours)
+  if (p === '/api/soirees' && req.method === 'GET') {
+    const now = Date.now(), cutoff = now - 7 * 24 * 3600 * 1000;
+    const rows = db.prepare("SELECT code,date_start,lieu,type,tranche FROM soirees WHERE COALESCE(annulee,0)=0 AND date_start IS NOT NULL").all()
+      .filter((so) => new Date(so.date_start).getTime() >= cutoff)
+      .map((so) => ({ code: so.code, iso: so.date_start, lieu: so.lieu || '', type: so.type || '', tranche: so.tranche || '', past: new Date(so.date_start).getTime() < now }));
+    return json(res, 200, rows);
   }
 
   // Désinscription : page de confirmation (GET) puis action réelle (POST, ou 1-clic Gmail/Outlook)
