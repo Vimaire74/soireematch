@@ -770,6 +770,26 @@ function choisirPage(person) {
   </div></html>`;
 }
 
+function confirmSoireePage(person, so) {
+  const tok = resaToken(person.email);
+  return `${siteHead('Réserver — Soirée Match')}
+  <div class=box>
+    <h1>Réserver ta place 💛</h1>
+    <div class=facts>
+      ${so.date_texte ? `<div><b>${esc(so.date_texte)}</b><span>Quand</span></div>` : ''}
+      ${so.lieu ? `<div><b>${esc(so.lieu)}</b><span>Où</span></div>` : ''}
+      ${so.prix ? `<div><b>${esc(so.prix)}</b><span>Entrée</span></div>` : ''}
+    </div>
+    <p class=muted>Clique ci-dessous pour réserver et régler ta place.</p>
+    <form method=post action=/reserver/confirm>
+      <input type=hidden name=e value="${esc(person.email)}">
+      <input type=hidden name=t value="${esc(tok)}">
+      <input type=hidden name=soiree value="${so.id}">
+      <button class=btn>Je réserve et je paie ma place</button>
+    </form>
+    <p style="margin-top:14px"><a href="${SITE_URL}/reserver?e=${encodeURIComponent(person.email)}&t=${tok}">Voir toutes les soirées qui me correspondent</a></p>
+  </div></html>`;
+}
 function soireesPage() {
   const list = db.prepare('SELECT s.*, (SELECT COUNT(*) FROM reservations r WHERE r.soiree_id=s.id) resa FROM soirees s ORDER BY s.id DESC').all();
   const rows = list.map((s) => `<tr>
@@ -1357,7 +1377,7 @@ const server = http.createServer(async (req, res) => {
     const sCode = (url.searchParams.get('s') || '').trim();
     if (sCode) {
       const soS = getSoiree(sCode);
-      if (soS && soS.actif && eligibleForSoiree(person, soS)) return startReservation(res, soS, person);
+      if (soS && soS.actif && eligibleForSoiree(person, soS)) return send(res, 200, confirmSoireePage(person, soS));
     }
     return send(res, 200, choisirPage(person));
   }
