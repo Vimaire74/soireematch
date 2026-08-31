@@ -259,7 +259,7 @@
   <div class="wrap">
     <h2 data-i18n="dates_h">Prochaines soirées</h2>
     <p class="sub" data-i18n="dates_sub">À Lausanne · entrée 20 CHF · tranches d'âge souples (±3 ans)</p>
-    <div class="dates-grid">
+    <div class="dates-grid" id="datesGrid">
       <div class="datecard"><div class="d" data-i18n="date1">Mardi 22 septembre 2026</div><div class="m" data-i18n="meta1">20h30 · 20–30 ans · Hétéro</div></div>
       <div class="datecard"><div class="d" data-i18n="date2">Mardi 29 septembre 2026</div><div class="m" data-i18n="meta2">20h30 · 40–50 ans · Hétéro</div></div>
     </div>
@@ -484,6 +484,7 @@
       b.classList.toggle('active', b.getAttribute('data-lang') === lang);
     });
     try{ localStorage.setItem('sm_lang', lang); }catch(e){}
+    if (typeof renderSoirees === 'function') renderSoirees();
   }
 
   langToggle.addEventListener('click', function(e){ e.stopPropagation(); langbar.classList.toggle('open'); });
@@ -496,6 +497,46 @@
   var saved = null; try{ saved = localStorage.getItem('sm_lang'); }catch(e){}
   var nav = (navigator.language || 'fr').slice(0,2).toLowerCase();
   setLang(saved || (LANGS.includes(nav) ? nav : 'fr'));
+
+  // ===== Prochaines soirées (dynamique depuis l'admin) =====
+  var soireesData = null;
+  var SOI_LAB = {
+    type: {
+      'Hétéro': {fr:'Hétéro', en:'Straight', de:'Hetero', it:'Etero', es:'Hetero'},
+      'Gay hommes': {fr:'Entre hommes', en:'Gay men', de:'Unter Männern', it:'Tra uomini', es:'Entre hombres'},
+      'Gay femmes': {fr:'Entre femmes', en:'Gay women', de:'Unter Frauen', it:'Tra donne', es:'Entre mujeres'}
+    },
+    ans: {fr:'ans', en:'years', de:'Jahre', it:'anni', es:'años'},
+    passe: {fr:'soirée passée', en:'past event', de:'vergangen', it:'serata passata', es:'velada pasada'},
+    bientot: {fr:'Les prochaines dates arrivent très bientôt.', en:'New dates coming very soon.', de:'Neue Termine folgen in Kürze.', it:'Nuove date molto presto.', es:'Próximas fechas muy pronto.'}
+  };
+  function soireeCard(s, lang){
+    var d = new Date(s.iso);
+    var dateStr = d.toLocaleDateString(lang, {timeZone:'UTC', weekday:'long', day:'numeric', month:'long', year:'numeric'});
+    dateStr = dateStr.charAt(0).toUpperCase() + dateStr.slice(1);
+    var hh = String(d.getUTCHours()).padStart(2,'0'), mm = String(d.getUTCMinutes()).padStart(2,'0');
+    var timeStr = lang === 'fr' ? (hh + 'h' + mm) : (lang === 'en' ? d.toLocaleTimeString('en', {timeZone:'UTC', hour:'numeric', minute:'2-digit'}) : (hh + ':' + mm));
+    var parts = [timeStr];
+    if (s.tranche){
+      var tr = s.tranche.replace('-', '\u2013');
+      parts.push(lang === 'en' ? ('Ages ' + tr) : (tr + ' ' + SOI_LAB.ans[lang]));
+    }
+    var tl = SOI_LAB.type[s.type]; if (tl) parts.push(tl[lang] || tl.fr);
+    if (s.past) parts.push(SOI_LAB.passe[lang] || SOI_LAB.passe.fr);
+    return '<div class="datecard"' + (s.past ? ' style="opacity:.55"' : '') + '><div class="d">' + dateStr + '</div><div class="m">' + parts.join(' \u00b7 ') + '</div></div>';
+  }
+  function renderSoirees(){
+    var grid = document.getElementById('datesGrid');
+    if (!grid || !soireesData) return;
+    var lang = (typeof curLang !== 'undefined' && curLang) ? curLang : 'fr';
+    if (!soireesData.length){ grid.innerHTML = '<p class="sub" style="grid-column:1/-1">' + (SOI_LAB.bientot[lang] || SOI_LAB.bientot.fr) + '</p>'; return; }
+    var arr = soireesData.slice().sort(function(a, b){
+      if (a.past !== b.past) return a.past ? 1 : -1;
+      return a.past ? b.iso.localeCompare(a.iso) : a.iso.localeCompare(b.iso);
+    });
+    grid.innerHTML = arr.map(function(s){ return soireeCard(s, lang); }).join('');
+  }
+  fetch('/api/soirees').then(function(r){ return r.json(); }).then(function(list){ soireesData = list; renderSoirees(); }).catch(function(){});
 
   // ===== Envoi du formulaire d'inscription =====
   const form = document.getElementById('inscForm');
