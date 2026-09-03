@@ -65,35 +65,23 @@ if (MAIL_USER && MAIL_PASS) {
 function sendConfirmation(i) {
   if (!transporter) return;
   const prenom = (i.prenom || '').trim() || 'à toi';
+  const now = Date.now();
+  const soirees = matchingSoirees(i).filter((so) => !so.date_start || new Date(so.date_start).getTime() >= now);
+  const unsub = unsubLink(i.email);
+  const listeTxt = soirees.length
+    ? "\n\nVoici les prochaines soirées qui te correspondent — clique pour réserver ta place :\n\n" + soirees.map((so) => `• ${so.date_texte || so.code}${soireeMetaShort(so) ? ' · ' + soireeMetaShort(so) : ''}${so.lieu ? '\n  ' + so.lieu : ''}\n  👉 Réserver : ${resaLinkSoiree(i.email, so.code)}`).join('\n\n')
+    : "\n\nAucune date n'est encore ouverte pour ton profil — on te préviendra par e-mail dès qu'une soirée qui te correspond est fixée.";
+  const listeHtml = soirees.length
+    ? `<p>Voici les prochaines soirées qui te correspondent — clique pour réserver ta place :</p>` + soirees.map((so) => `<div style="background:#ffffff;border:1px solid #57a893;border-left:4px solid #d0aa54;border-radius:10px;padding:14px 16px;margin:14px 0"><div style="font-weight:700;color:#156b54;font-size:16px">${esc(so.date_texte || so.code)}</div><div style="color:#5b6b64;font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so))}${so.lieu ? ' · ' + esc(so.lieu) : ''}</div><a href="${resaLinkSoiree(i.email, so.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:22px;font-weight:600;font-size:14px">Réserver ma place</a></div>`).join('')
+    : `<p>Aucune date n'est encore ouverte pour ton profil — on te préviendra par e-mail dès qu'une soirée qui te correspond est fixée.</p>`;
+  const meca = "Comment ça marche : les places partent dans l'ordre d'inscription. Dès qu'une place est libre pour ton profil (pour les soirées hétéro, dès qu'il y a autant de femmes que d'hommes), tu peux la régler ; sinon tu passes en liste d'attente et on te prévient dès qu'une place se libère.";
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Merci ! Ton inscription à la <b>Soirée Match</b> est bien enregistrée.</p>${listeHtml}<p style="color:#5b6b64;font-size:14px">${meca}</p><p style="margin-top:18px">À très vite,<br><b>L'équipe Soirée Match</b></p>`;
   transporter.sendMail({
-    from: MAIL_FROM,
-    to: i.email,
-    subject: 'Ton inscription à la Soirée Match est confirmée 🎉',
-    text:
-`Bonjour ${prenom},
-
-Merci ! Ton inscription à la Soirée Match est bien enregistrée.
-
-On te recontacte très vite avec la date, le lieu exact à Lausanne et les détails pour régler ton entrée (20 CHF). En attendant, prépare-toi à faire de vraies rencontres — sans applis, sans swipe.
-
-À très vite,
-L'équipe Soirée Match
-
-Une question ? Réponds simplement à cet e-mail.`,
-    html:
-`<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:520px;margin:auto;color:#1e2f30">
-  <div style="background:linear-gradient(135deg,#2f7d8a,#6fc0c0);color:#fff;padding:28px 24px;border-radius:14px 14px 0 0">
-    <h1 style="margin:0;font-size:1.5rem">Soirée Match</h1>
-    <p style="margin:6px 0 0;opacity:.95">Ton inscription est confirmée 🎉</p>
-  </div>
-  <div style="border:1px solid #d3e5e2;border-top:0;border-radius:0 0 14px 14px;padding:24px">
-    <p>Bonjour ${prenom},</p>
-    <p>Merci&nbsp;! Ton inscription à la <b>Soirée Match</b> est bien enregistrée.</p>
-    <p>On te recontacte très vite avec la <b>date</b>, le <b>lieu exact à Lausanne</b> et les détails pour régler ton entrée (20&nbsp;CHF). En attendant, prépare-toi à faire de vraies rencontres — sans applis, sans swipe.</p>
-    <p style="margin-top:22px">À très vite,<br><b>L'équipe Soirée Match</b></p>
-    <p style="color:#6f7f7e;font-size:.85rem;margin-top:22px">Une question&nbsp;? Réponds simplement à cet e-mail.</p>
-  </div>
-</div>`,
+    from: MAIL_FROM, to: i.email,
+    subject: 'Ton inscription à la Soirée Match est confirmée',
+    text: `Bonjour ${prenom},\n\nMerci ! Ton inscription à la Soirée Match est bien enregistrée.` + listeTxt + `\n\n${meca}\n\nÀ très vite,\nL'équipe Soirée Match\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`,
+    html: emailShell(inner, unsub),
+    headers: { 'List-Unsubscribe': `<${unsub}>, <mailto:${MAIL_USER}?subject=désinscription>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' },
   }).catch((e) => console.error('Envoi e-mail confirmation échoué:', e.message));
 
   if (NOTIFY_TO) {
@@ -103,6 +91,23 @@ Une question ? Réponds simplement à cet e-mail.`,
       text: `${i.prenom} ${i.nom}\n${i.email} — ${i.tel}\nNé(e) en ${i.annee} · ${i.genre} · cherche : ${i.recherche}\nLangues : ${i.langues || '—'}`,
     }).catch((e) => console.error('Notif organisateur échouée:', e.message));
   }
+}
+
+function sendOptIn(i) {
+  if (!transporter) return;
+  const prenom = (i.prenom || '').trim() || 'à toi';
+  const link = `${SITE_URL}/confirmer?e=${encodeURIComponent(i.email)}&t=${confirmToken(i.email)}`;
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Cette adresse vient d'être inscrite à la <b>Soirée Match</b>. Pour finaliser ton inscription et recevoir les prochaines soirées qui te correspondent, confirme ton adresse :</p><p style="text-align:center;margin:24px 0"><a href="${link}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Confirmer mon inscription</a></p><p style="color:#5b6b64;font-size:14px">Si ce n'est pas toi, ignore simplement cet e-mail : sans confirmation, tu ne recevras plus rien de notre part.</p>`;
+  transporter.sendMail({
+    from: MAIL_FROM, to: i.email,
+    subject: 'Confirme ton inscription à la Soirée Match',
+    text: `Bonjour ${prenom},\n\nCette adresse vient d'être inscrite à la Soirée Match. Pour finaliser ton inscription, confirme ton adresse ici :\n${link}\n\nSi ce n'est pas toi, ignore cet e-mail : sans confirmation, tu ne recevras plus rien.\n\nL'équipe Soirée Match`,
+    html: emailShell(inner, unsubLink(i.email)),
+  }).catch((e) => console.error('Opt-in échoué:', e.message));
+}
+function confirmOptInPage(email, token) {
+  const q = `e=${encodeURIComponent(email)}&t=${encodeURIComponent(token)}`;
+  return `${siteHead('Confirmer mon inscription')}<div class=box><h1>Confirme ton inscription 💛</h1><p>Un dernier clic : confirme que c'est bien toi qui t'inscris à la Soirée Match. Sans cette confirmation, tu ne recevras aucun e-mail de notre part.</p><form method=post action="/confirmer?${q}" style="margin-top:18px"><button class=btn>Oui, je confirme mon inscription</button></form></div></html>`;
 }
 
 // ---------- Utilitaires ----------
@@ -185,6 +190,14 @@ function rateLimited(ip) {
 // ---------- Désinscription + campagnes e-mail ----------
 try { db.exec('ALTER TABLE inscriptions ADD COLUMN unsubscribed INTEGER DEFAULT 0'); } catch { /* colonne déjà présente */ }
 try { db.exec('ALTER TABLE inscriptions ADD COLUMN langues TEXT'); } catch { /* colonne déjà présente */ }
+try {
+  db.exec('ALTER TABLE inscriptions ADD COLUMN confirmed INTEGER DEFAULT 0');
+  db.exec('UPDATE inscriptions SET confirmed=1');   // 1re migration : les inscrits déjà présents sont considérés confirmés
+} catch { /* colonne déjà présente */ }
+try {
+  db.exec('ALTER TABLE inscriptions ADD COLUMN welcome_sent INTEGER DEFAULT 0');
+  db.exec('UPDATE inscriptions SET welcome_sent=1');   // 1re migration : inscrits déjà présents = déjà informés (blast)
+} catch { /* colonne déjà présente */ }
 
 const SITE_URL = (process.env.SITE_URL || cfg.siteUrl || 'https://soireematch.com').replace(/\/+$/, '');
 const STRIPE_SECRET = process.env.STRIPE_SECRET_KEY || '';
@@ -192,6 +205,7 @@ const STRIPE_WH_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 const PAY_ON = !!STRIPE_SECRET;
 const unsubToken = (email) => crypto.createHmac('sha256', SECRET).update('unsub:' + String(email).toLowerCase()).digest('base64url');
 const unsubLink = (email) => `${SITE_URL}/unsub?e=${encodeURIComponent(email)}&t=${unsubToken(email)}`;
+const confirmToken = (email) => crypto.createHmac('sha256', SECRET).update('confirm:' + String(email).toLowerCase()).digest('base64url');
 
 // ---------- Soirées + réservations ----------
 db.exec(`CREATE TABLE IF NOT EXISTS soirees(
@@ -218,6 +232,8 @@ try { db.exec('ALTER TABLE reservations ADD COLUMN status TEXT'); } catch { /* d
 try { db.exec('ALTER TABLE reservations ADD COLUMN hold_expires TEXT'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN priority INTEGER DEFAULT 0'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN stripe_payment_intent TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE reservations ADD COLUMN forced INTEGER DEFAULT 0'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE reservations ADD COLUMN paid_at TEXT'); } catch { /* déjà là */ }
 try { db.exec("UPDATE reservations SET status = CASE WHEN COALESCE(paid,0)=1 THEN 'paid' ELSE 'expired' END WHERE status IS NULL"); } catch {}
 
 const getSoiree = (code) => db.prepare('SELECT * FROM soirees WHERE code=?').get(code);
@@ -282,7 +298,7 @@ function markPaidAndConfirm(resa, paymentIntent) {
   const fresh = db.prepare('SELECT * FROM reservations WHERE id=?').get(resa.id);
   if (!fresh || fresh.status === 'paid') return;
   const so = getSoireeById(fresh.soiree_id);
-  db.prepare("UPDATE reservations SET status='paid', paid=1, stripe_payment_intent=? WHERE id=?").run(paymentIntent || fresh.stripe_payment_intent || null, fresh.id);
+  db.prepare("UPDATE reservations SET status='paid', paid=1, stripe_payment_intent=?, paid_at=? WHERE id=?").run(paymentIntent || fresh.stripe_payment_intent || null, nowIso(), fresh.id);
   if (!so) return;
   if (so.annulee || so.reconcile_done) {
     // soirée annulée ou déjà réconciliée : on ne peut plus garantir la place -> remboursement
@@ -325,8 +341,8 @@ async function startReservation(res, so, person) {
   }
   // mode gratuit (pas de Stripe) : on confirme direct
   if (!PAY_ON) {
-    db.prepare("INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,status,priority,paid) VALUES(?,?,?,?,?,?,?,?,?,'paid',0,1)")
-      .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, genre, person.recherche, nowIso());
+    db.prepare("INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,status,priority,paid,paid_at) VALUES(?,?,?,?,?,?,?,?,?,'paid',0,1,?)")
+      .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, genre, person.recherche, nowIso(), nowIso());
     sendReservationMail(so, person);
     promote(so);
     return send(res, 200, soireeOkPage(so));
@@ -455,7 +471,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
 
 // Destinataires (exclut les désinscrits) selon genre / recherche / "tous"
 function recipientsFor({ genre, recherche, tranche }) {
-  let sql = 'SELECT prenom, email, genre, recherche, annee, langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0', args = [];
+  let sql = 'SELECT prenom, email, genre, recherche, annee, langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0 AND COALESCE(confirmed,0)=1', args = [];
   if (genre) { sql += ' AND genre=?'; args.push(genre); }
   if (recherche) { sql += ' AND recherche=?'; args.push(recherche); }
   if (tranche && /^\d+-\d+$/.test(tranche)) {
@@ -641,7 +657,7 @@ function adminPage(query) {
     <td>${esc(r.tel)}</td><td>${esc(r.annee)}</td>
     <td>${esc(r.genre)}</td><td>${esc(r.recherche)}</td>
     <td>${esc(r.langues || '')}</td>
-    <td><a href="/admin/edit?id=${r.id}">Éditer</a></td>
+    <td><a href="/admin/edit?id=${r.id}">Éditer</a>${r.unsubscribed ? '' : (!r.confirmed ? ' · <span style="color:#c0392b" title="E-mail non confirmé">⏳ non confirmé</span>' : ` · <form method=post action=/admin/send-soirees style="display:inline" onsubmit="return confirm('Envoyer les prochaines soirées à ${esc(r.prenom || '')} ?')"><input type=hidden name=id value=${r.id}><button style="padding:2px 8px;font-size:12px" title="${r.welcome_sent ? 'Déjà envoyé — renvoyer' : 'Pas encore envoyé'}">${r.welcome_sent ? '↻ soirées' : '✉ soirées'}</button></form>`)}</td>
   </tr>`).join('');
 
   return `<!doctype html><html lang=fr><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
@@ -859,7 +875,7 @@ function reservationsPage(s, done) {
   const cnt = (st, g) => list.filter((r) => r.status === st && (!g || r.genre === g)).length;
   const par = isParity(s);
   const lbl = { paid: '✅ payé', hold: '⏳ à confirmer (3h)', waiting: "🕒 liste d'attente", refunded: '↩ remboursé', expired: '✕ expiré', cancelled: '✕ annulé' };
-  const rows = list.map((r, i) => `<tr><td>${i + 1}</td><td>${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.genre)}</td><td>${lbl[r.status] || esc(r.status || '')}</td><td>${['paid', 'hold', 'waiting'].includes(r.status) ? `<form method=post action=/admin/soirees/resa/remove style="margin:0" onsubmit="return confirm('Retirer ${esc((r.prenom || '') + ' ' + (r.nom || ''))} ?${r.status === 'paid' ? ' Cette personne sera remboursée.' : ''}')"><input type=hidden name=id value=${r.id}><button class=danger style="padding:4px 10px;font-size:12px">Retirer</button></form>` : ''}</td></tr>`).join('');
+  const rows = list.map((r, i) => `<tr><td>${i + 1}</td><td>${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.genre)}</td><td>${lbl[r.status] || esc(r.status || '')}</td><td>${r.status === 'waiting' ? `<form method=post action=/admin/soirees/resa/allow style="margin:0 0 4px" onsubmit="return confirm('Autoriser ${esc(r.prenom || '')} à payer, hors parité ? (peut déséquilibrer la soirée)')"><input type=hidden name=id value=${r.id}><button style="padding:4px 10px;font-size:12px;background:#156b54;color:#fff">Autoriser à payer</button></form>` : ''}${['paid', 'hold', 'waiting'].includes(r.status) ? `<form method=post action=/admin/soirees/resa/remove style="margin:0" onsubmit="return confirm('Retirer ${esc((r.prenom || '') + ' ' + (r.nom || ''))} ?${r.status === 'paid' ? ' Cette personne sera remboursée.' : ''}')"><input type=hidden name=id value=${r.id}><button class=danger style="padding:4px 10px;font-size:12px">Retirer</button></form>` : ''}</td></tr>`).join('');
   const viable = isViable(s);
   const capLine = par
     ? `Parité stricte — <b>${cnt('paid', 'Femme')}</b> F / <b>${cnt('paid', 'Homme')}</b> H payés · min ${minSexe(s)}/sexe · max ${capSexe(s)}/sexe · ${viable ? '<span style="color:#1c7a3f">✔ viable</span>' : `<span style="color:#c0392b">✘ sous le minimum (manque ${esc(deficitTxt(s))})</span>`}`
@@ -1184,7 +1200,7 @@ function promote(soIn) {
         db.prepare("UPDATE reservations SET status='hold', hold_expires=? WHERE id=?").run(new Date(nowMs() + HOLD_MS).toISOString(), w.id);
         mailSlotOpen(so, w);
       } else {
-        db.prepare("UPDATE reservations SET status='paid', paid=1 WHERE id=?").run(w.id);
+        db.prepare("UPDATE reservations SET status='paid', paid=1, paid_at=? WHERE id=?").run(nowIso(), w.id);
         sendReservationMail(so, w);
       }
     }
@@ -1208,7 +1224,7 @@ async function reconcile(so) {
   if (f === h) return;
   const majority = f > h ? 'Femme' : 'Homme';
   const excess = Math.abs(f - h);
-  const rows = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid' AND genre=? ORDER BY priority ASC, created_at DESC LIMIT ?").all(so.id, majority, excess);
+  const rows = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid' AND genre=? ORDER BY COALESCE(paid_at, created_at) DESC LIMIT ?").all(so.id, majority, excess);
   for (const r of rows) await refundResa(r, so, 'parite');
 }
 async function cancelSoiree(so, reason) {
@@ -1304,9 +1320,16 @@ const server = http.createServer(async (req, res) => {
         !(annee >= 1930 && annee <= new Date().getFullYear()) || !genre || !recherche || !consent) {
       return json(res, 400, { ok: false, error: 'Merci de remplir tous les champs correctement (et de cocher le consentement).' });
     }
-    db.prepare(`INSERT INTO inscriptions(created_at,prenom,nom,email,tel,annee,genre,recherche,langues,consent,ip,ua)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(new Date().toISOString(), prenom, nom, email, tel, annee, genre, recherche, langues, consent, ip, (req.headers['user-agent'] || '').slice(0, 300));
-    sendConfirmation({ prenom, nom, email, tel, annee, genre, recherche, langues });   // envoi non bloquant
+    const existing = db.prepare('SELECT id, COALESCE(confirmed,0) c FROM inscriptions WHERE lower(email)=lower(?)').get(email);
+    if (existing && existing.c === 1) return json(res, 200, { ok: true });   // déjà inscrit et confirmé
+    if (existing) {
+      db.prepare('UPDATE inscriptions SET prenom=?,nom=?,tel=?,annee=?,genre=?,recherche=?,langues=?,consent=? WHERE id=?')
+        .run(prenom, nom, tel, annee, genre, recherche, langues, consent, existing.id);
+    } else {
+      db.prepare(`INSERT INTO inscriptions(created_at,prenom,nom,email,tel,annee,genre,recherche,langues,consent,ip,ua,confirmed)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(new Date().toISOString(), prenom, nom, email, tel, annee, genre, recherche, langues, consent, ip, (req.headers['user-agent'] || '').slice(0, 300));
+    }
+    sendOptIn({ prenom, email });   // double opt-in : e-mail de confirmation (non bloquant)
     return json(res, 200, { ok: true });
   }
 
@@ -1323,6 +1346,24 @@ const server = http.createServer(async (req, res) => {
       .filter((so) => new Date(so.date_start).getTime() >= cutoff)
       .map((so) => ({ code: so.code, iso: so.date_start, lieu: so.lieu || '', type: so.type || '', tranche: so.tranche || '', past: new Date(so.date_start).getTime() < now }));
     return json(res, 200, rows);
+  }
+
+  // Confirmation d'adresse (double opt-in) : page (GET) puis validation (POST, à l'abri des scanners)
+  if (p === '/confirmer') {
+    const email = url.searchParams.get('e') || '';
+    const t = String(url.searchParams.get('t') || '');
+    const good = email ? confirmToken(email) : '';
+    const valid = !!good && t.length === good.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(good));
+    if (!valid) return send(res, 200, pubMsg('Lien invalide', 'Ce lien de confirmation n\'est plus valide. Réinscris-toi sur soireematch.com.'));
+    const person = db.prepare('SELECT * FROM inscriptions WHERE lower(email)=lower(?)').get(email);
+    if (!person) return send(res, 200, pubMsg('Introuvable', 'Aucune inscription trouvée pour cette adresse.'));
+    if (req.method === 'POST') {
+      await readBody(req);
+      if (!person.confirmed) { db.prepare('UPDATE inscriptions SET confirmed=1, welcome_sent=1 WHERE id=?').run(person.id); sendConfirmation(person); }
+      return send(res, 200, pubMsg('Inscription confirmée ✓', 'Merci ! Ton adresse est confirmée. Tu vas recevoir un e-mail avec les prochaines soirées qui te correspondent. À très vite ! 💛'));
+    }
+    if (person.confirmed) return send(res, 200, pubMsg('Déjà confirmé', 'Ton inscription est déjà confirmée. À très vite ! 💛'));
+    return send(res, 200, confirmOptInPage(email, t));
   }
 
   // Désinscription : page de confirmation (GET) puis action réelle (POST, ou 1-clic Gmail/Outlook)
@@ -1484,6 +1525,12 @@ const server = http.createServer(async (req, res) => {
         'Content-Disposition': `attachment; filename="soireematch-contacts-${new Date().toISOString().slice(0, 10)}.csv"`,
       });
     }
+    if (p === '/admin/send-soirees' && req.method === 'POST') {
+      const id = Number(parseForm(await readBody(req)).id);
+      const r = id && db.prepare('SELECT * FROM inscriptions WHERE id=?').get(id);
+      if (r && r.confirmed && !r.unsubscribed) { sendConfirmation(r); db.prepare('UPDATE inscriptions SET welcome_sent=1 WHERE id=?').run(id); }
+      return send(res, 302, '', { Location: '/admin' });
+    }
     if (p === '/admin/delete' && req.method === 'POST') {
       const d = parseForm(await readBody(req));
       let ids = d.ids || [];
@@ -1507,7 +1554,7 @@ const server = http.createServer(async (req, res) => {
       const linkUrl = so ? soireeLink(so.code) : SITE_URL;
       const auto = (d.auto === 'on' || d.auto === '1');
       const recips = (auto && selected.length)
-        ? db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0').all().filter((p) => selected.some((sel) => eligibleForSoiree(p, sel)))
+        ? db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0 AND COALESCE(confirmed,0)=1').all().filter((p) => selected.some((sel) => eligibleForSoiree(p, sel)))
         : recipientsFor({ genre, recherche, tranche });
       runCampaign(recips, subject, body, linkUrl, so, selected);   // en arrière-plan (non bloquant)
       return send(res, 302, '', { Location: '/admin' });
@@ -1598,6 +1645,16 @@ const server = http.createServer(async (req, res) => {
       const so = getSoireeById(r.soiree_id);
       if (so) promote(so);
       return send(res, 302, '', { Location: `/admin/soirees/reservations?id=${r.soiree_id}&done=1` });
+    }
+    if (p === '/admin/soirees/resa/allow' && req.method === 'POST') {
+      const id = Number(parseForm(await readBody(req)).id);
+      const r = id && db.prepare('SELECT * FROM reservations WHERE id=?').get(id);
+      if (r && r.status === 'waiting') {
+        const so = getSoireeById(r.soiree_id);
+        if (!PAY_ON) { db.prepare("UPDATE reservations SET status='paid', paid=1, paid_at=? WHERE id=?").run(nowIso(), id); if (so) sendReservationMail(so, r); }
+        else { db.prepare("UPDATE reservations SET status='hold', hold_expires=? WHERE id=?").run(new Date(nowMs() + HOLD_MS).toISOString(), id); if (so) mailSlotOpen(so, r); }
+      }
+      return send(res, 302, '', { Location: r ? `/admin/soirees/reservations?id=${r.soiree_id}&done=1` : '/admin/soirees' });
     }
 
     // Éditer une fiche
