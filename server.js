@@ -211,6 +211,9 @@ const confirmToken = (email) => crypto.createHmac('sha256', SECRET).update('conf
 db.exec(`CREATE TABLE IF NOT EXISTS soirees(
   id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL,
   date_texte TEXT, lieu TEXT, prix TEXT, actif INTEGER DEFAULT 1, created_at TEXT)`);
+db.exec(`CREATE TABLE IF NOT EXISTS campaigns(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, sent_at TEXT, subject TEXT, body TEXT,
+  tpl TEXT, soirees TEXT, tranches TEXT, recipients INTEGER, sent INTEGER, failed INTEGER)`);
 db.exec(`CREATE TABLE IF NOT EXISTS reservations(
   id INTEGER PRIMARY KEY AUTOINCREMENT, soiree_id INTEGER,
   prenom TEXT, nom TEXT, email TEXT, tel TEXT, annee INTEGER, genre TEXT, recherche TEXT,
@@ -424,7 +427,7 @@ function resaCSV(rows) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let lastCampaign = null; // { at, total, sent, failed, running, subject }
 
-async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null, soireesForList = null, forceEligible = false) {
+async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null, soireesForList = null, forceEligible = false, campaignId = null) {
   lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
   const dateTxt = (so && so.date_texte) ? so.date_texte : '';
   const lieuTxt = (so && so.lieu) ? so.lieu : '';
@@ -466,6 +469,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     await sleep(300);
   }
   lastCampaign.running = false;
+  if (campaignId) { try { db.prepare('UPDATE campaigns SET sent=?, failed=? WHERE id=?').run(lastCampaign.sent, lastCampaign.failed, campaignId); } catch {} }
   console.log(`Campagne « ${subject} » : ${lastCampaign.sent}/${lastCampaign.total} envoyés, ${lastCampaign.failed} échecs.`);
 }
 
@@ -687,6 +691,7 @@ function adminPage(query) {
     <div class=bar>
       <a href="/admin/compose"><button type=button>✉ Écrire aux inscrits</button></a>
       <a href="/admin/test"><button type=button class=sec>🧪 E-mail de test</button></a>
+      <a href="/admin/emails"><button type=button class=sec>📋 E-mails envoyés</button></a>
       <button form=act formaction=/admin/export>⬇ Exporter la sélection (CSV)</button>
       <a href="/admin/export?all=1${q || fg || fr || fl || ft ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) + '&langue=' + encodeURIComponent(fl) + '&tranche=' + encodeURIComponent(ft) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
       <button form=act formaction=/admin/delete class=danger onclick="return confirm('Supprimer les inscriptions sélectionnées ?')">🗑 Supprimer la sélection</button>
@@ -1000,6 +1005,7 @@ function composePage() {
       <label>Message</label>
       <textarea id=body name=body rows=14 required placeholder="Bonjour {prenom},&#10;&#10;…"></textarea>
       <p class=hint>Repères : <b>{prenom}</b> = le prénom de chacun · <b>{reserver}</b> = bouton personnalisé « Je réserve ma place » (chaque personne arrive sur une page qui lui montre <b>automatiquement les soirées qui la concernent</b> selon son âge, son sexe et qui elle cherche — réservation en un clic). <b>{lien}</b> = un lien fixe vers la soirée liée ci-dessus, ou le site. <b>{date}</b> et <b>{lieu}</b> = la date et le lieu de la soirée liée (se remplissent tout seuls). <b>{soirees}</b> = la liste de toutes les soirées à venir, avec un lien « Réserver » uniquement pour celles qui concernent la personne (les autres affichées sans lien). Un lien de désinscription est ajouté automatiquement en bas.</p>
+      <input type=hidden id=tpl_name name=tpl_name>
       <div style="margin-top:14px"><button ${off ? 'disabled' : ''}>Envoyer</button></div>
     </form>
   </div>
@@ -1009,7 +1015,7 @@ function composePage() {
       const i = +e.target.value; if (i < 0) return;
       const subj = document.getElementById('subject'), body = document.getElementById('body');
       if ((subj.value || body.value) && !confirm('Remplacer l\\'objet et le message par ce modèle ?')) { e.target.value = '-1'; return; }
-      subj.value = TPL[i].subject; body.value = TPL[i].body;
+      subj.value = TPL[i].subject; body.value = TPL[i].body; document.getElementById('tpl_name').value = TPL[i].name;
     });
   </script></html>`;
 }
@@ -1051,6 +1057,27 @@ function testComposePage(done) {
       document.getElementById('body').value = TPL[i].body;
     });
   </script></html>`;
+}
+
+function adminEmailsPage(done) {
+  const list = db.prepare('SELECT * FROM campaigns ORDER BY id DESC').all();
+  const rows = list.map((c) => `<tr>
+    <td>${esc((c.sent_at || '').slice(0, 16).replace('T', ' '))}</td>
+    <td>${esc(c.tpl || '—')}</td>
+    <td>${esc(c.tranches || '—')}</td>
+    <td>${esc(c.subject || '')}</td>
+    <td style="text-align:center">${c.sent}/${c.recipients}${c.failed ? ` <span style="color:#c0392b">(${c.failed} éch.)</span>` : ''}</td>
+    <td><details><summary style="cursor:pointer;color:#2f7d8a">Voir</summary><pre style="white-space:pre-wrap;font:inherit;background:#f6fbfa;border:1px solid #d3e5e2;border-radius:8px;padding:10px;margin:6px 0;max-width:520px"><b>Objet :</b> ${esc(c.subject)}\n\n${esc(c.body)}</pre></details></td>
+    <td><form method=post action=/admin/emails/resend style="margin:0"><input type=hidden name=id value=${c.id}><button class=sec style="padding:4px 10px;font-size:12px">M'envoyer</button></form></td>
+  </tr>`).join('');
+  return `${pageHead('E-mails envoyés')}
+  <div class=wrap>
+    <a class=back href="/admin">← Retour aux inscriptions</a>
+    <h2>E-mails envoyés</h2>
+    ${done ? '<div class=panel style="border-color:#8fbf8f;background:#eefaee;color:#1c7a3f">✅ Copie envoyée à ton adresse.</div>' : ''}
+    <p class=hint>Classés du plus récent au plus ancien. « Voir » affiche le texte complet ; « M'envoyer » t'expédie une copie pour relecture.</p>
+    ${list.length ? `<table><tr><th>Date</th><th>Type</th><th>Tranches</th><th>Objet</th><th>Envoyés</th><th>Texte</th><th></th></tr>${rows}</table>` : '<div class=empty>Aucune campagne envoyée pour l\'instant.</div>'}
+  </div></html>`;
 }
 
 function editPage(r) {
@@ -1556,7 +1583,10 @@ const server = http.createServer(async (req, res) => {
       const recips = (auto && selected.length)
         ? db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0 AND COALESCE(confirmed,0)=1').all().filter((p) => selected.some((sel) => eligibleForSoiree(p, sel)))
         : recipientsFor({ genre, recherche, tranche });
-      runCampaign(recips, subject, body, linkUrl, so, selected);   // en arrière-plan (non bloquant)
+      const tpl = (d.tpl_name || '').trim();
+      const camp = db.prepare('INSERT INTO campaigns(sent_at,subject,body,tpl,soirees,tranches,recipients,sent,failed) VALUES(?,?,?,?,?,?,?,0,0)')
+        .run(nowIso(), subject, body, tpl, selected.map((x) => x.code).join(', '), [...new Set(selected.map((x) => x.tranche).filter(Boolean))].join(', '), recips.length);
+      runCampaign(recips, subject, body, linkUrl, so, selected, false, Number(camp.lastInsertRowid));   // en arrière-plan (non bloquant)
       return send(res, 302, '', { Location: '/admin' });
     }
     if (p === '/admin/test' && req.method === 'GET') return send(res, 200, testComposePage(url.searchParams.get('done') || ''));
@@ -1574,6 +1604,19 @@ const server = http.createServer(async (req, res) => {
       const recips = [row || { prenom: 'Test', email: testEmail, genre: '', recherche: '', annee: 0, langues: '' }];
       runCampaign(recips, subject, body, linkUrl, so, selected, true);   // true = afficher les soirées cochées (aperçu)
       return send(res, 302, '', { Location: '/admin/test?done=' + encodeURIComponent(testEmail) });
+    }
+    if (p === '/admin/emails' && req.method === 'GET') return send(res, 200, adminEmailsPage(url.searchParams.get('done')));
+    if (p === '/admin/emails/resend' && req.method === 'POST') {
+      const id = Number(parseForm(await readBody(req)).id);
+      const c = id && db.prepare('SELECT * FROM campaigns WHERE id=?').get(id);
+      const to = NOTIFY_TO || (/@/.test(ADMIN_USER) ? ADMIN_USER : '');
+      if (c && to && transporter) {
+        const selected = (c.soirees || '').split(',').map((x) => getSoiree(x.trim())).filter(Boolean);
+        const so = selected.length === 1 ? selected[0] : null;
+        const linkUrl = so ? soireeLink(so.code) : SITE_URL;
+        runCampaign([{ prenom: 'Marc', email: to, genre: '', recherche: '', annee: 0, langues: '' }], '[COPIE] ' + c.subject, c.body, linkUrl, so, selected, true);
+      }
+      return send(res, 302, '', { Location: '/admin/emails?done=1' });
     }
 
     // Gestion des soirées
