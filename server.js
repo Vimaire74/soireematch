@@ -214,6 +214,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS soirees(
 db.exec(`CREATE TABLE IF NOT EXISTS campaigns(
   id INTEGER PRIMARY KEY AUTOINCREMENT, sent_at TEXT, subject TEXT, body TEXT,
   tpl TEXT, soirees TEXT, tranches TEXT, recipients INTEGER, sent INTEGER, failed INTEGER)`);
+try { db.exec('ALTER TABLE campaigns ADD COLUMN recipient_list TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE campaigns ADD COLUMN genres TEXT'); } catch { /* déjà là */ }
 db.exec(`CREATE TABLE IF NOT EXISTS reservations(
   id INTEGER PRIMARY KEY AUTOINCREMENT, soiree_id INTEGER,
   prenom TEXT, nom TEXT, email TEXT, tel TEXT, annee INTEGER, genre TEXT, recherche TEXT,
@@ -1059,27 +1061,49 @@ function testComposePage(done) {
   </script></html>`;
 }
 
-function adminEmailsPage(done) {
-  const list = db.prepare('SELECT * FROM campaigns ORDER BY id DESC').all();
-  const rows = list.map((c) => `<tr>
-    <td>${esc((c.sent_at || '').slice(0, 16).replace('T', ' '))}</td>
-    <td>${esc(c.tpl || '—')}</td>
-    <td>${esc(c.tranches || '—')}</td>
-    <td>${esc(c.subject || '')}</td>
-    <td style="text-align:center">${c.sent}/${c.recipients}${c.failed ? ` <span style="color:#c0392b">(${c.failed} éch.)</span>` : ''}</td>
-    <td><details><summary style="cursor:pointer;color:#2f7d8a">Voir</summary><pre style="white-space:pre-wrap;font:inherit;background:#f6fbfa;border:1px solid #d3e5e2;border-radius:8px;padding:10px;margin:6px 0;max-width:520px"><b>Objet :</b> ${esc(c.subject)}\n\n${esc(c.body)}</pre></details></td>
-    <td><form method=post action=/admin/emails/resend style="margin:0"><input type=hidden name=id value=${c.id}><button class=sec style="padding:4px 10px;font-size:12px">M'envoyer</button></form></td>
-  </tr>`).join('');
+function adminEmailsPage(query) {
+  query = query || {};
+  const done = query.done;
+  const fs = (query.soiree || '').trim();
+  const fg = (query.genre || '').trim();
+  let list = db.prepare('SELECT * FROM campaigns ORDER BY id DESC').all();
+  if (fs) list = list.filter((c) => (c.soirees || '').split(',').map((x) => x.trim()).includes(fs));
+  if (fg) list = list.filter((c) => (c.genres || '').split(',').map((x) => x.trim()).includes(fg));
+  const soirees = db.prepare('SELECT code, date_texte FROM soirees ORDER BY id DESC').all();
+  const rows = list.map((c) => {
+    const emails = (c.recipient_list || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const dests = emails.length
+      ? `<details><summary style="cursor:pointer;color:#2f7d8a">${emails.length} destinataire(s)</summary><div style="max-height:170px;overflow:auto;font-size:12px;color:var(--muted);border:1px solid #d3e5e2;border-radius:8px;padding:8px;margin:6px 0;max-width:280px">${emails.map((e) => esc(e)).join('<br>')}</div></details>`
+      : `<span class=hint>${c.recipients || 0}</span>`;
+    return `<tr>
+      <td>${esc((c.sent_at || '').slice(0, 16).replace('T', ' '))}</td>
+      <td>${esc(c.tpl || '—')}</td>
+      <td>${esc(c.tranches || '—')}</td>
+      <td>${esc(c.genres || '—')}</td>
+      <td>${esc(c.subject || '')}</td>
+      <td style="text-align:center">${c.sent}/${c.recipients}${c.failed ? ` <span style="color:#c0392b">(${c.failed} éch.)</span>` : ''}</td>
+      <td>${dests}</td>
+      <td><details><summary style="cursor:pointer;color:#2f7d8a">Texte</summary><pre style="white-space:pre-wrap;font:inherit;background:#f6fbfa;border:1px solid #d3e5e2;border-radius:8px;padding:10px;margin:6px 0;max-width:480px"><b>Objet :</b> ${esc(c.subject)}\n\n${esc(c.body)}</pre></details></td>
+      <td><form method=post action=/admin/emails/resend style="margin:0"><input type=hidden name=id value=${c.id}><button class=sec style="padding:4px 10px;font-size:12px">M'envoyer</button></form></td>
+    </tr>`;
+  }).join('');
+  const soireeOpts = soirees.map((so) => `<option value="${esc(so.code)}"${so.code === fs ? ' selected' : ''}>${esc(so.date_texte || so.code)}</option>`).join('');
+  const genreOpts = ['Femme', 'Homme'].map((g) => `<option value="${g}"${g === fg ? ' selected' : ''}>${g}</option>`).join('');
   return `${pageHead('E-mails envoyés')}
   <div class=wrap>
     <a class=back href="/admin">← Retour aux inscriptions</a>
     <h2>E-mails envoyés</h2>
     ${done ? '<div class=panel style="border-color:#8fbf8f;background:#eefaee;color:#1c7a3f">✅ Copie envoyée à ton adresse.</div>' : ''}
-    <p class=hint>Classés du plus récent au plus ancien. « Voir » affiche le texte complet ; « M'envoyer » t'expédie une copie pour relecture.</p>
-    ${list.length ? `<table><tr><th>Date</th><th>Type</th><th>Tranches</th><th>Objet</th><th>Envoyés</th><th>Texte</th><th></th></tr>${rows}</table>` : '<div class=empty>Aucune campagne envoyée pour l\'instant.</div>'}
+    <form class=panel method=get action=/admin/emails style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <span>Soirée <select name=soiree><option value="">Toutes</option>${soireeOpts}</select></span>
+      <span>Genre <select name=genre><option value="">Tous</option>${genreOpts}</select></span>
+      <button>Filtrer</button>
+      ${(fs || fg) ? '<a href="/admin/emails" class=hint>réinitialiser</a>' : ''}
+    </form>
+    <p class=hint>Classés du plus récent au plus ancien. « Texte » = contenu complet ; « destinataire(s) » = liste des adresses ; « M'envoyer » = copie pour relecture.</p>
+    ${list.length ? `<table><tr><th>Date</th><th>Type</th><th>Tranches</th><th>Genre(s)</th><th>Objet</th><th>Envoyés</th><th>Destinataires</th><th>Texte</th><th></th></tr>${rows}</table>` : '<div class=empty>Aucune campagne pour ce filtre.</div>'}
   </div></html>`;
 }
-
 function editPage(r) {
   const opt = (v, cur) => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`;
   return `${pageHead('Éditer une inscription')}
@@ -1584,8 +1608,10 @@ const server = http.createServer(async (req, res) => {
         ? db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0 AND COALESCE(confirmed,0)=1').all().filter((p) => selected.some((sel) => eligibleForSoiree(p, sel)))
         : recipientsFor({ genre, recherche, tranche });
       const tpl = (d.tpl_name || '').trim();
-      const camp = db.prepare('INSERT INTO campaigns(sent_at,subject,body,tpl,soirees,tranches,recipients,sent,failed) VALUES(?,?,?,?,?,?,?,0,0)')
-        .run(nowIso(), subject, body, tpl, selected.map((x) => x.code).join(', '), [...new Set(selected.map((x) => x.tranche).filter(Boolean))].join(', '), recips.length);
+      const emails = recips.map((r) => r.email).join(', ');
+      const genres = [...new Set(recips.map((r) => r.genre).filter(Boolean))].join(', ');
+      const camp = db.prepare('INSERT INTO campaigns(sent_at,subject,body,tpl,soirees,tranches,recipients,sent,failed,recipient_list,genres) VALUES(?,?,?,?,?,?,?,0,0,?,?)')
+        .run(nowIso(), subject, body, tpl, selected.map((x) => x.code).join(', '), [...new Set(selected.map((x) => x.tranche).filter(Boolean))].join(', '), recips.length, emails, genres);
       runCampaign(recips, subject, body, linkUrl, so, selected, false, Number(camp.lastInsertRowid));   // en arrière-plan (non bloquant)
       return send(res, 302, '', { Location: '/admin' });
     }
@@ -1605,7 +1631,7 @@ const server = http.createServer(async (req, res) => {
       runCampaign(recips, subject, body, linkUrl, so, selected, true);   // true = afficher les soirées cochées (aperçu)
       return send(res, 302, '', { Location: '/admin/test?done=' + encodeURIComponent(testEmail) });
     }
-    if (p === '/admin/emails' && req.method === 'GET') return send(res, 200, adminEmailsPage(url.searchParams.get('done')));
+    if (p === '/admin/emails' && req.method === 'GET') return send(res, 200, adminEmailsPage(Object.fromEntries(url.searchParams)));
     if (p === '/admin/emails/resend' && req.method === 'POST') {
       const id = Number(parseForm(await readBody(req)).id);
       const c = id && db.prepare('SELECT * FROM campaigns WHERE id=?').get(id);
