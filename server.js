@@ -1355,6 +1355,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  const host = (req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase();
+  if (host.startsWith('www.')) return send(res, 301, '', { Location: 'https://soireematch.com' + req.url });
   if (req.method === 'GET' && (p === '/' || p === '/index.html')) trackVisit(req, ip);
 
   // API publique : inscription
