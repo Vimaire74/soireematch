@@ -451,15 +451,16 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
       ? eligibles.map((so2) => `<div style="background:#ffffff;border:1px solid #57a893;border-left:4px solid #d0aa54;border-radius:10px;padding:14px 16px;margin:14px 0"><div style="font-weight:700;color:#156b54;font-size:16px">${esc(so2.date_texte || so2.code)}</div><div style="color:#5b6b64;font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so2))}${so2.lieu ? ' · ' + esc(so2.lieu) : ''}</div><a href="${resaLinkSoiree(r.email, so2.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:22px;font-weight:600;font-size:14px">Réserver ma place</a></div>`).join('')
       : `<div style="margin:12px 0;color:#8a9a99">${esc(aucune)}</div>`;
     const dateR = eligibles.length ? eligibles.map((x) => x.date_texte || x.code).join(' ou le ') : dateTxt;
+    const opp = r.genre === 'Homme' ? 'femmes déjà inscrites' : (r.genre === 'Femme' ? 'hommes déjà inscrits' : 'femmes et hommes déjà inscrits');
     const lieuR = eligibles.length ? (eligibles[0].lieu || '') : lieuTxt;
-    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque\}/gi, manqueTxt).replace(/\{soirees\}/gi, sT);
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque\}/gi, manqueTxt).replace(/\{sexe_oppose\}/gi, opp).replace(/\{soirees\}/gi, sT);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
     const btn = `<a href="${resa}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réserve ma place</a>`;
     const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
-      .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque\}/gi, esc(manqueTxt))
+      .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque\}/gi, esc(manqueTxt)).replace(/\{sexe_oppose\}/gi, esc(opp))
       .replace(/\{soirees\}/gi, sH)
       .replace(/\n/g, '<br>');
     const html = emailShell(htmlBody, unsub);
@@ -964,17 +965,15 @@ L'équipe Soirée Match`,
     subject: 'Il ne reste que quelques jours pour t\'inscrire',
     body: `Bonjour {prenom},
 
-Petit rappel : chaque Soirée Match se décide le samedi qui précède — c'est la date limite pour t'inscrire et faire en sorte qu'elle ait lieu. Après, il sera peut-être trop tard !
+Petit rappel : chaque Soirée Match se décide au plus tard le samedi qui précède — c'est la date limite pour t'inscrire et faire en sorte qu'elle ait lieu. Après, il sera peut-être trop tard, et s'il n'y a pas assez d'inscrits, nous devrons annuler la soirée.
 
 Voici les dates qui te concernent :
 
 {soirees}
 
-Plus on s'inscrit tôt, plus la soirée est garantie. On compte sur toi 💛
+Les {sexe_oppose} comptent sur ton engagement.
 
-Une question ? Écris-nous à contact@soireematch.com.
-
-À très vite,
+Bonne semaine,
 L'équipe Soirée Match`,
   },
   {
