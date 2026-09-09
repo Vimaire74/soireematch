@@ -249,7 +249,7 @@ const soireeLink = (code) => `${SITE_URL}/soiree/${encodeURIComponent(code)}`;
 
 // ---------- Routage : lien de réservation personnalisé + correspondance profil → soirées ----------
 const TYPES = ['Hétéro', 'Gay hommes', 'Gay femmes'];
-const TRANCHES = ['20-30', '30-40', '40-50', '50-60'];
+const TRANCHES = ['20-30', '30-40', '40-50', '50-60', '60+'];
 const resaToken = (email) => crypto.createHmac('sha256', SECRET).update('resa:' + String(email).toLowerCase()).digest('base64url');
 const resaLink = (email) => `${SITE_URL}/reserver?e=${encodeURIComponent(email)}&t=${resaToken(email)}`;
 const resaLinkSoiree = (email, code) => `${SITE_URL}/reserver?e=${encodeURIComponent(email)}&t=${resaToken(email)}&s=${encodeURIComponent(code)}`;
@@ -386,6 +386,7 @@ function allowedTypes(genre, recherche) {
 }
 function trancheOk(tranche, age) {
   if (!tranche || !Number.isFinite(age)) return true;   // soirée sans tranche = visible par tous
+  if (tranche === '60+') return age >= 57;              // 60 ans et + (souplesse ±3)
   const m = String(tranche).match(/(\d+)\s*[-–]\s*(\d+)/);
   if (!m) return true;
   return age >= (+m[1] - 3) && age <= (+m[2] + 3);       // souplesse ±3 ans
@@ -487,6 +488,9 @@ function recipientsFor({ genre, recherche, tranche }) {
     const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)";
     sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} < ?`;
     args.push(lo, hi);
+  } else if (tranche === '60+') {
+    const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)";
+    sql += ` AND annee IS NOT NULL AND ${age} >= 60`;
   }
   return db.prepare(sql).all(...args);
 }
@@ -648,7 +652,7 @@ function adminPage(query) {
   if (fg) { sql += ' AND genre = ?'; args.push(fg); }
   if (fr) { sql += ' AND recherche = ?'; args.push(fr); }
   if (fl) { sql += ' AND langues LIKE ?'; args.push(`%${fl}%`); }
-  if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} <= ?`; args.push(lo - 3, hi + 3); }
+  if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} <= ?`; args.push(lo - 3, hi + 3); } else if (ft === '60+') { const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= 57`; }
   sql += ' ORDER BY id DESC';
   const rows = db.prepare(sql).all(...args);
   const selF = rows.filter((r) => r.genre === 'Femme').length, selH = rows.filter((r) => r.genre === 'Homme').length;
@@ -686,7 +690,7 @@ function adminPage(query) {
       <select name=genre><option value="">Tous genres</option>${['Femme', 'Homme', 'Non binaire'].map((v) => opt(v, fg)).join('')}</select>
       <select name=recherche><option value="">Toutes recherches</option>${['Des hommes', 'Des femmes', 'Les deux'].map((v) => opt(v, fr)).join('')}</select>
       <select name=langue><option value="">Toutes langues</option>${['Français', 'Anglais', 'Espagnol', 'Allemand', 'Italien'].map((v) => opt(v, fl)).join('')}</select>
-      <select name=tranche><option value="">Tous âges</option>${['20-30', '30-40', '40-50', '50-60'].map((v) => `<option value="${v}"${v === ft ? ' selected' : ''}>${v} ans</option>`).join('')}</select>
+      <select name=tranche><option value="">Tous âges</option>${['20-30', '30-40', '40-50', '50-60', '60+'].map((v) => `<option value="${v}"${v === ft ? ' selected' : ''}>${v} ans</option>`).join('')}</select>
       <button>Filtrer</button>
       <a href=/admin><button type=button class=sec>Réinitialiser</button></a>
     </form>
@@ -1017,7 +1021,7 @@ function composePage() {
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <span>Genre <select name=genre><option value="">Tous</option>${['Femme', 'Homme', 'Non binaire'].map(opt).join('')}</select></span>
         <span>Intéressé(e) par <select name=recherche><option value="">Peu importe</option>${['Des hommes', 'Des femmes', 'Les deux'].map(opt).join('')}</select></span>
-        <span>Tranche d'âge <select name=tranche><option value="">Toutes</option>${['20-30', '30-40', '40-50', '50-60'].map((v) => `<option value="${v}">${v} ans</option>`).join('')}</select></span>
+        <span>Tranche d'âge <select name=tranche><option value="">Toutes</option>${['20-30', '30-40', '40-50', '50-60', '60+'].map((v) => `<option value="${v}">${v} ans</option>`).join('')}</select></span>
       </div>
       <p class=hint>Laisse « Tous » + « Peu importe » pour écrire à <b>tout le monde</b>. Repères : Femmes ${byG['Femme'] || 0} · Hommes ${byG['Homme'] || 0} · Non binaire ${byG['Non binaire'] || 0} — cherche : hommes ${byR['Des hommes'] || 0}, femmes ${byR['Des femmes'] || 0}, les deux ${byR['Les deux'] || 0}. (Les désinscrits sont exclus automatiquement.)</p>
 
@@ -1733,7 +1737,7 @@ const server = http.createServer(async (req, res) => {
         if (fg) { sql += ' AND genre=?'; args.push(fg); }
         if (fr) { sql += ' AND recherche=?'; args.push(fr); }
         if (fl) { sql += ' AND langues LIKE ?'; args.push(`%${fl}%`); }
-        if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} <= ?`; args.push(lo - 3, hi + 3); }
+        if (/^\d+-\d+$/.test(ft)) { const [lo, hi] = ft.split('-').map(Number); const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} <= ?`; args.push(lo - 3, hi + 3); } else if (ft === '60+') { const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)"; sql += ` AND annee IS NOT NULL AND ${age} >= 57`; }
         sql += ' ORDER BY id DESC';
         rows = db.prepare(sql).all(...args);
       } else {
