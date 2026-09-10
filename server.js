@@ -1030,6 +1030,7 @@ function composePage() {
       </div>
       <p class=hint>Si tu coches <b>une seule</b> soirée, les balises {lien}, {date} et {lieu} pointent vers elle. Si tu en coches plusieurs (ou aucune), utilise <b>{soirees}</b> pour toutes les lister ; {lien} mène alors au site.</p>
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=auto checked> Envoyer uniquement aux personnes concernées par les soirées cochées (âge ±3, sexe, orientation)</label>
+      <p class=hint>Ce filtre <b>s'ajoute</b> aux réglages « À qui ? » ci-dessus : si tu choisis Genre = Homme, seuls les hommes concernés recevront l'e-mail.</p>
 
       <label>Objet</label>
       <input id=subject name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
@@ -1780,8 +1781,10 @@ const server = http.createServer(async (req, res) => {
       const so = selected.length === 1 ? selected[0] : null;   // balises singulières {lien}/{date}/{lieu}
       const linkUrl = so ? soireeLink(so.code) : SITE_URL;
       const auto = (d.auto === 'on' || d.auto === '1');
+      // Les filtres « À qui ? » (genre / recherche / tranche) s'appliquent TOUJOURS,
+      // y compris quand le ciblage automatique par soirée est coché.
       const recips = (auto && selected.length)
-        ? db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0 AND COALESCE(confirmed,0)=1').all().filter((p) => selected.some((sel) => eligibleForSoiree(p, sel)))
+        ? recipientsFor({ genre, recherche, tranche }).filter((p) => selected.some((sel) => eligibleForSoiree(p, sel)))
         : recipientsFor({ genre, recherche, tranche });
       const tpl = (d.tpl_name || '').trim();
       const emails = recips.map((r) => r.email).join(', ');
