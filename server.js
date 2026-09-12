@@ -1424,23 +1424,33 @@ function cancelChoiceMail(so, r, motif, opts) {
   const remb = `${SITE_URL}/rembourser?rid=${r.id}&t=${resaTok(r.id)}`;
   const person = { prenom: r.prenom, nom: r.nom, email: r.email, genre: r.genre, recherche: r.recherche, annee: r.annee };
   const futs = proposedSoirees(person, so, opts, false);
-  const dates = futs.map((f) => `<b>${esc(f.date_texte || f.code)}</b>${f.lieu ? ` — ${esc(f.lieu)}` : ''}`);
-  const datesTxt = futs.map((f) => `• ${f.date_texte || f.code}${f.lieu ? ` — ${f.lieu}` : ''}`).join('\n');
-  const annonce = futs.length
-    ? `<p>${futs.length > 1 ? 'Nos prochaines dates pour ton profil' : 'Notre prochaine date pour ton profil'} : ${dates.join(' · ')}. Tu peux y reporter ta place sans rien repayer.</p>`
+  // Libellé du bouton : la date exacte quand il n'y en a qu'une, sinon on annonce les dates au-dessus
+  const btnRep = futs.length === 1
+    ? `Déplacer mon inscription au ${esc(futs[0].date_texte || futs[0].code)}`
+    : (futs.length ? 'Déplacer mon inscription (choisir la date)' : 'Déplacer mon inscription sur une autre soirée');
+  const btnRepTxt = futs.length === 1
+    ? `Déplacer mon inscription au ${futs[0].date_texte || futs[0].code}`
+    : (futs.length ? 'Déplacer mon inscription (choisir la date)' : 'Déplacer mon inscription sur une autre soirée');
+  const annonce = futs.length > 1
+    ? `<p>Prochaines dates pour ton profil : ${futs.map((f) => `<b>${esc(f.date_texte || f.code)}</b>${f.lieu ? ` — ${esc(f.lieu)}` : ''}`).join(' · ')}</p>`
+    : (futs.length === 1 && futs[0].lieu ? `<p>Prochaine date : <b>${esc(futs[0].date_texte || futs[0].code)}</b> — ${esc(futs[0].lieu)}</p>` : '');
+  const annonceTxt = futs.length
+    ? `\n${futs.length > 1 ? 'Prochaines dates pour ton profil' : 'Prochaine date'} :\n${futs.map((f) => `• ${f.date_texte || f.code}${f.lieu ? ` — ${f.lieu}` : ''}`).join('\n')}\n`
     : '';
   const inner = `<p>Bonjour ${esc(prenom)},</p>`
-    + `<p>La <b>Soirée Match du ${esc(dateTxt)}</b> n'aura malheureusement pas lieu. ${esc(m)} Cependant ta place est déjà réglée, nous te proposons donc deux choix :</p>`
+    + `<p>La <b>Soirée Match du ${esc(dateTxt)}</b> n'aura malheureusement pas lieu. ${esc(m)}</p>`
+    + `<p>Comme ta place est déjà réglée, nous te proposons deux choix : déplacer ton inscription sur une nouvelle soirée de manière prioritaire ou te rembourser. Te rembourser va nous coûter des frais de traitement de la part de Stripe, donc si tu déplaces ton inscription, cela ne nous coûtera rien et nous t'en remercions d'avance. En espérant évidemment que la prochaine date te convienne.</p>`
     + annonce
-    + `<p style="text-align:center;margin:22px 0"><a href="${rep}" style="display:inline-block;background:#156b54;color:#fff;text-decoration:none;padding:12px 22px;border-radius:26px;font-weight:700">Reporter sur une autre soirée</a></p>`
+    + `<p style="text-align:center;margin:22px 0"><a href="${rep}" style="display:inline-block;background:#156b54;color:#fff;text-decoration:none;padding:12px 22px;border-radius:26px;font-weight:700">${btnRep}</a></p>`
     + `<p style="text-align:center;margin:22px 0"><a href="${remb}" style="display:inline-block;background:#ffffff;color:#156b54;text-decoration:none;padding:11px 22px;border-radius:26px;font-weight:700;border:2px solid #156b54">Être remboursé(e)</a></p>`
-    + `<p style="color:#5b6b64;font-size:14px">En reportant, ta place est <b>garantie</b> sur la nouvelle date, sans rien repayer. Et si tu préfères être remboursé(e), c'est en un clic : ton paiement te revient intégralement, sans avoir à te justifier.</p>`
+    + `<p style="color:#5b6b64;font-size:14px">En déplaçant ton inscription, ta place est <b>garantie</b> sur la nouvelle date, sans rien repayer.</p>`
     + `<p style="color:#5b6b64;font-size:14px">Rien ne presse — tu peux choisir plus tard, ton paiement reste au chaud tant que tu n'as rien cliqué.</p>`
     + `<p>On est vraiment désolés de ce contretemps : on avait hâte de te recevoir. On se rattrape très vite, promis</p><p>L'équipe Soirée Match</p>`;
-  const text = `Bonjour ${prenom},\n\nLa Soirée Match du ${dateTxt} n'aura malheureusement pas lieu. ${m} Cependant ta place est déjà réglée, nous te proposons donc deux choix :\n`
-    + (futs.length ? `\n${futs.length > 1 ? 'Nos prochaines dates pour ton profil' : 'Notre prochaine date pour ton profil'} :\n${datesTxt}\n` : '')
-    + `\n• Reporter sur une autre soirée — ta place est garantie sur la nouvelle date, sans rien repayer :\n  ${rep}\n\n• Être remboursé(e) — en un clic, ton paiement te revient intégralement :\n  ${remb}\n\nRien ne presse : tu peux choisir plus tard, ton paiement reste au chaud tant que tu n'as rien cliqué.\n\nOn est vraiment désolés de ce contretemps : on avait hâte de te recevoir. On se rattrape très vite, promis.\n\nL'équipe Soirée Match`;
-  return { subject: `Soirée Match du ${dateTxt} annulée — reporter ou être remboursé(e) ?`, text, inner };
+  const text = `Bonjour ${prenom},\n\nLa Soirée Match du ${dateTxt} n'aura malheureusement pas lieu. ${m}\n\n`
+    + `Comme ta place est déjà réglée, nous te proposons deux choix : déplacer ton inscription sur une nouvelle soirée de manière prioritaire ou te rembourser. Te rembourser va nous coûter des frais de traitement de la part de Stripe, donc si tu déplaces ton inscription, cela ne nous coûtera rien et nous t'en remercions d'avance. En espérant évidemment que la prochaine date te convienne.\n`
+    + annonceTxt
+    + `\n• ${btnRepTxt} — ta place est garantie, sans rien repayer :\n  ${rep}\n\n• Être remboursé(e) :\n  ${remb}\n\nRien ne presse : tu peux choisir plus tard, ton paiement reste au chaud tant que tu n'as rien cliqué.\n\nOn est vraiment désolés de ce contretemps : on avait hâte de te recevoir. On se rattrape très vite, promis.\n\nL'équipe Soirée Match`;
+  return { subject: `Soirée Match du ${dateTxt} annulée — déplacer ton inscription ou être remboursé(e) ?`, text, inner };
 }
 function mailCancelChoice(so, r, motif, opts) {
   if (!transporter) return;
