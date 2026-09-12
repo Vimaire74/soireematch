@@ -1608,7 +1608,7 @@ function cancelPreviewBody(so, motif, o, opts) {
     <p style="margin:14px 0 0;color:#5b6b64;font-size:14px">Aucun remboursement n'est déclenché automatiquement : chaque personne choisit elle-même. Les inscrits qui n'ont pas réservé cette soirée ne reçoivent rien.</p>
   </div>
 
-  <form method=post action="${o.action}" style="${box}" onsubmit="return confirm('Envoyer les e-mails et annuler définitivement la soirée ?')">
+  <form id=fann method=post action="${o.action}" style="${box}">
     ${o.hidden}
     <input type=hidden name=propset value=1>
     <label style="display:block;font-weight:700;margin-bottom:6px">Prochaines soirées à proposer dans l'e-mail</label>
@@ -1619,11 +1619,23 @@ function cancelPreviewBody(so, motif, o, opts) {
     <textarea name=motif rows=3 style="width:100%;box-sizing:border-box;font:inherit;padding:8px;border:1px solid #c8d8d2;border-radius:8px">${esc(m)}</textarea>
     <p style="color:#5b6b64;font-size:14px;margin:8px 0 0">Modifie le texte puis clique « Rafraîchir l'aperçu » pour le relire dans l'e-mail. Le bouton rouge, lui, envoie pour de bon.</p>
     <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
-      <button type=submit formmethod=get formaction="${o.refresh}" style="padding:10px 18px;border:1px solid #156b54;background:#fff;color:#156b54;border-radius:22px;font-weight:700;cursor:pointer">↻ Rafraîchir l'aperçu</button>
-      <button style="padding:10px 18px;border:0;background:#c0392b;color:#fff;border-radius:22px;font-weight:700;cursor:pointer">✕ Annuler la soirée et envoyer les e-mails</button>
+      <button type=button onclick="rafraichirApercu()" style="padding:10px 18px;border:1px solid #156b54;background:#fff;color:#156b54;border-radius:22px;font-weight:700;cursor:pointer">↻ Rafraîchir l'aperçu</button>
+      <button type=submit onclick="return confirm('Envoyer les e-mails et annuler définitivement la soirée ?')" style="padding:10px 18px;border:0;background:#c0392b;color:#fff;border-radius:22px;font-weight:700;cursor:pointer">✕ Annuler la soirée et envoyer les e-mails</button>
     </div>
   </form>
 
+  <script>
+    function rafraichirApercu() {
+      var f = document.getElementById('fann'), q = [];
+      for (var i = 0; i < f.elements.length; i++) {
+        var el = f.elements[i];
+        if (!el.name || el.type === 'submit' || el.type === 'button') continue;
+        if ((el.type === 'checkbox' || el.type === 'radio') && !el.checked) continue;
+        q.push(encodeURIComponent(el.name) + '=' + encodeURIComponent(el.value));
+      }
+      window.location.href = ${JSON.stringify(o.refresh)} + '?' + q.join('&');
+    }
+  </script>
   <div style="${box}">
     <p style="margin:0 0 8px"><b>Aperçu 1/2 — aux personnes ayant payé.</b> Objet : <i>${esc(mail.subject)}</i></p>
     <iframe srcdoc="${esc(html)}" style="width:100%;height:780px;border:1px solid #d7e6df;border-radius:8px;background:#fff"></iframe>
