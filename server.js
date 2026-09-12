@@ -69,7 +69,7 @@ function sendConfirmation(i) {
   const soirees = matchingSoirees(i).filter((so) => !so.date_start || new Date(so.date_start).getTime() >= now);
   const unsub = unsubLink(i.email);
   const listeTxt = soirees.length
-    ? "\n\nVoici les prochaines soirées qui te correspondent — clique pour réserver ta place :\n\n" + soirees.map((so) => `• ${so.date_texte || so.code}${soireeMetaShort(so) ? ' · ' + soireeMetaShort(so) : ''}${so.lieu ? '\n  ' + so.lieu : ''}\n  👉 Réserver : ${resaLinkSoiree(i.email, so.code)}`).join('\n\n')
+    ? "\n\nVoici les prochaines soirées qui te correspondent — clique pour réserver ta place :\n\n" + soirees.map((so) => `• ${so.date_texte || so.code}${soireeMetaShort(so) ? ' · ' + soireeMetaShort(so) : ''}${so.lieu ? '\n  ' + so.lieu : ''}\n  Réserver : ${resaLinkSoiree(i.email, so.code)}`).join('\n\n')
     : "\n\nAucune date n'est encore ouverte pour ton profil — on te préviendra par e-mail dès qu'une soirée qui te correspond est fixée.";
   const listeHtml = soirees.length
     ? `<p>Voici les prochaines soirées qui te correspondent — clique pour réserver ta place :</p>` + soirees.map((so) => `<div style="background:#ffffff;border:1px solid #57a893;border-left:4px solid #d0aa54;border-radius:10px;padding:14px 16px;margin:14px 0"><div style="font-weight:700;color:#156b54;font-size:16px">${esc(so.date_texte || so.code)}</div><div style="color:#5b6b64;font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so))}${so.lieu ? ' · ' + esc(so.lieu) : ''}</div><a href="${resaLinkSoiree(i.email, so.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:22px;font-weight:600;font-size:14px">Réserver ma place</a></div>`).join('')
@@ -418,8 +418,8 @@ function sendReservationMail(so, i) {
   const quand = so.date_texte ? ` du ${so.date_texte}` : '';
   transporter.sendMail({
     from: MAIL_FROM, to: i.email,
-    subject: `Ta réservation Soirée Match${so.date_texte ? ` — ${so.date_texte}` : ''} est confirmée 🎉`,
-    text: `Bonjour ${prenom},\n\nTa place pour la Soirée Match${quand} est bien réservée !\n${so.lieu ? `\nLieu : ${so.lieu}` : ''}${so.prix ? `\nEntrée : ${so.prix}` : ''}\n\nUn petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !\n\nOn a hâte de te voir. À très vite !\nTa team Soirée Match 💛`,
+    subject: `Ta réservation Soirée Match${so.date_texte ? ` — ${so.date_texte}` : ''} est confirmée`,
+    text: `Bonjour ${prenom},\n\nTa place pour la Soirée Match${quand} est bien réservée !\n${so.lieu ? `\nLieu : ${so.lieu}` : ''}${so.prix ? `\nEntrée : ${so.prix}` : ''}\n\nUn petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !\n\nOn a hâte de te voir. À très vite !\nTa team Soirée Match`,
   }).catch((e) => console.error('Mail réservation échoué:', e.message));
   if (NOTIFY_TO) transporter.sendMail({ from: MAIL_FROM, to: NOTIFY_TO, subject: `Réservation « ${so.code} » : ${i.prenom || ''} ${i.nom || ''}`, text: `Nouvelle réservation pour ${so.code} (${so.date_texte || ''})\n${i.prenom || ''} ${i.nom || ''} — ${i.email || ''}` }).catch(() => {});
 }
@@ -445,7 +445,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const eligibles = forceEligible ? allSoirees : allSoirees.filter((so2) => eligibleForSoiree(r, so2));
     const aucune = "Aucune date ne correspond à ton profil pour le moment — on t'écrit dès qu'une nouvelle soirée s'ouvre pour toi.";
     const sT = eligibles.length
-      ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${soireeMetaShort(so2) ? ' · ' + soireeMetaShort(so2) : ''}${so2.lieu ? '\n  ' + so2.lieu : ''}\n  👉 Réserver : ${resaLinkSoiree(r.email, so2.code)}`).join('\n\n')
+      ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${soireeMetaShort(so2) ? ' · ' + soireeMetaShort(so2) : ''}${so2.lieu ? '\n  ' + so2.lieu : ''}\n  Réserver : ${resaLinkSoiree(r.email, so2.code)}`).join('\n\n')
       : aucune;
     const sH = eligibles.length
       ? eligibles.map((so2) => `<div style="background:#ffffff;border:1px solid #57a893;border-left:4px solid #d0aa54;border-radius:10px;padding:14px 16px;margin:14px 0"><div style="font-weight:700;color:#156b54;font-size:16px">${esc(so2.date_texte || so2.code)}</div><div style="color:#5b6b64;font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so2))}${so2.lieu ? ' · ' + esc(so2.lieu) : ''}</div><a href="${resaLinkSoiree(r.email, so2.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:22px;font-weight:600;font-size:14px">Réserver ma place</a></div>`).join('')
@@ -822,10 +822,10 @@ function confirmSoireePage(person, so) {
   </div></html>`;
 }
 function soireesPage() {
-  const list = db.prepare('SELECT s.*, (SELECT COUNT(*) FROM reservations r WHERE r.soiree_id=s.id) resa FROM soirees s ORDER BY s.id DESC').all();
+  const list = db.prepare("SELECT s.*, (SELECT COUNT(*) FROM reservations r WHERE r.soiree_id=s.id AND r.status='paid') resa, (SELECT COUNT(*) FROM reservations r WHERE r.soiree_id=s.id AND r.status IN ('hold','waiting')) enattente FROM soirees s ORDER BY s.id DESC").all();
   const rows = list.map((s) => `<tr>
     <td><b>${esc(s.code)}</b></td><td>${esc(s.date_texte)}</td><td>${esc(s.lieu)}</td><td>${esc(s.prix)}</td><td>${esc(s.type || '—')}</td><td>${esc(s.tranche || '—')}</td>
-    <td>${s.actif ? '✅' : '—'}</td><td>${s.resa}</td>
+    <td>${s.actif ? '✅' : '—'}</td><td><b>${s.resa}</b>${s.enattente ? ` <span style="color:#8a6f5c;font-size:12px" title="en attente ou à confirmer">(+${s.enattente})</span>` : ''}</td>
     <td><a href="${soireeLink(s.code)}" target=_blank>Lien</a> · <a href="/admin/soirees/reservations?id=${s.id}">Réservations</a> · <a href="/admin/soirees/edit?id=${s.id}">Éditer</a></td>
   </tr>`).join('');
   return `${pageHead('Soirées')}
@@ -853,7 +853,7 @@ function soireesPage() {
       <div style="margin-top:14px"><button>Créer la soirée</button></div>
     </form>
     ${list.length ? `<table style="margin-top:18px">
-      <tr><th>Code</th><th>Date</th><th>Lieu</th><th>Prix</th><th>Type</th><th>Âge</th><th>Active</th><th>Résa</th><th>Actions</th></tr>${rows}</table>`
+      <tr><th>Code</th><th>Date</th><th>Lieu</th><th>Prix</th><th>Type</th><th>Âge</th><th>Active</th><th title="Réservations payées (+ en attente)">Payées</th><th>Actions</th></tr>${rows}</table>`
       : `<div class=empty>Aucune soirée. Crée la première ci-dessus, puis mets son <b>{lien}</b> dans un e-mail.</div>`}
   </div></html>`;
 }
@@ -914,7 +914,7 @@ function reservationsPage(s, done) {
       ${s.annulee ? '<span style="color:#c0392b;font-weight:600;align-self:center">Soirée annulée</span>' : `
       <form method=post action=/admin/soirees/confirm style="display:inline" onsubmit="return confirm('Confirmer la soirée et prévenir tous les inscrits payés ?')"><input type=hidden name=id value=${s.id}><button class=sec>✅ Confirmer &amp; prévenir</button></form>
       ${s.actif ? `<form method=post action=/admin/soirees/close style="display:inline"><input type=hidden name=id value=${s.id}><button class=sec>🔒 Fermer les inscriptions</button></form>` : `<form method=post action=/admin/soirees/reopen style="display:inline"><input type=hidden name=id value=${s.id}><button class=sec>🔓 Rouvrir</button></form>`}
-      <form method=post action=/admin/soirees/cancel style="display:inline" onsubmit="return confirm('Annuler la soirée ? Chaque personne payée recevra le choix report ou remboursement.')"><input type=hidden name=id value=${s.id}><button class=danger>✕ Annuler (report/remboursement)</button></form>`}
+      <form method=get action=/admin/soirees/cancel style="display:inline"><input type=hidden name=id value=${s.id}><button class=danger>✕ Annuler (aperçu de l'e-mail)</button></form>`}
     </div>
     ${list.length ? `<table><tr><th>#</th><th>Inscrit</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Genre</th><th>Statut</th><th>Action</th></tr>${rows}</table>`
       : `<div class=empty>Aucune réservation pour l'instant.</div>`}
@@ -922,18 +922,18 @@ function reservationsPage(s, done) {
 }
 
 // ---------- Modèles d'e-mails ----------
-const PRATIQUE = `📍 {lieu}
-🎟️ Entrée : 20 CHF
+const PRATIQUE = `Lieu : {lieu}
+Entrée : 20 CHF
 
 Un petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !
 
 Au programme : des jeux intelligents pour se découvrir, se comprendre vraiment et briser la glace, de la musique, quelques fous rires, et surtout de vraies rencontres humaines autour d'un verre — sans applis, sans rejet, sans faux-semblants.
 
-👉 {reserver}`;
+{reserver}`;
 
 const SIGNOFF = `On a hâte de te (re)voir. Belle semaine à toi !
 
-Ta team Soirée Match 💛`;
+Ta team Soirée Match`;
 
 const TEMPLATES = [
   {
@@ -1341,32 +1341,53 @@ ${link}
 function mailSoireeConfirmee(so, i) {
   if (!transporter) return;
   const prenom = (i.prenom || '').trim() || 'à toi';
-  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : la <b>Soirée Match du ${esc(so.date_texte || so.code)}</b> est <b>confirmée</b> — elle a bien lieu ! 🎉</p>${so.lieu ? `<p>📍 ${esc(so.lieu)}</p>` : ''}<p>On se réjouit de te voir. Viens avec le sourire, on s'occupe du reste.</p><p>À très vite,<br>L'équipe Soirée Match</p>`;
-  transporter.sendMail({ from: MAIL_FROM, to: i.email, subject: `C'est confirmé : Soirée Match du ${so.date_texte || so.code} 🎉`, text: `Bonjour ${prenom},\n\nBonne nouvelle : la Soirée Match du ${so.date_texte || so.code} est confirmée, elle a bien lieu !${so.lieu ? `\nLieu : ${so.lieu}` : ''}\n\nOn se réjouit de te voir. À très vite,\nL'équipe Soirée Match`, html: emailShell(inner, unsubLink(i.email)) }).catch(() => {});
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : la <b>Soirée Match du ${esc(so.date_texte || so.code)}</b> est <b>confirmée</b> — elle a bien lieu !</p>${so.lieu ? `<p>Lieu : ${esc(so.lieu)}</p>` : ''}<p>On se réjouit de te voir. Viens avec le sourire, on s'occupe du reste.</p><p>À très vite,<br>L'équipe Soirée Match</p>`;
+  transporter.sendMail({ from: MAIL_FROM, to: i.email, subject: `C'est confirmé : Soirée Match du ${so.date_texte || so.code}`, text: `Bonjour ${prenom},\n\nBonne nouvelle : la Soirée Match du ${so.date_texte || so.code} est confirmée, elle a bien lieu !${so.lieu ? `\nLieu : ${so.lieu}` : ''}\n\nOn se réjouit de te voir. À très vite,\nL'équipe Soirée Match`, html: emailShell(inner, unsubLink(i.email)) }).catch(() => {});
 }
-function mailCancelChoice(so, r) {
-  if (!transporter) return;
+function cancelMotif(so) {
+  if (isParity(so)) {
+    const mf = Math.max(0, minSexe(so) - paidCount(so.id, 'Femme'));
+    const mh = Math.max(0, minSexe(so) - paidCount(so.id, 'Homme'));
+    if (mh > mf) return "Nous sommes obligés d'annuler car nous n'avons pas assez d'inscriptions du côté des hommes.";
+    if (mf > mh) return "Nous sommes obligés d'annuler car nous n'avons pas assez d'inscriptions du côté des femmes.";
+  }
+  return "Nous sommes obligés d'annuler car nous n'avons pas reçu assez d'inscriptions pour cette date.";
+}
+// Contenu de l'e-mail « reporter ou être remboursé(e) » — partagé par l'envoi et la page d'aperçu
+function cancelChoiceMail(so, r, motif) {
   const prenom = (r.prenom || '').trim() || 'à toi';
+  const dateTxt = so.date_texte || so.code;
+  const m = (motif || '').trim() || cancelMotif(so);
   const rep = `${SITE_URL}/report?rid=${r.id}&t=${resaTok(r.id)}`;
   const remb = `${SITE_URL}/rembourser?rid=${r.id}&t=${resaTok(r.id)}`;
-  const inner = `<p>Bonjour ${esc(prenom)},</p><p>On est désolés : la <b>Soirée Match du ${esc(so.date_texte || so.code)}</b> n'aura pas lieu. Ta place est déjà réglée — à toi de choisir :</p>`
+  const inner = `<p>Bonjour ${esc(prenom)},</p>`
+    + `<p>La <b>Soirée Match du ${esc(dateTxt)}</b> n'aura malheureusement pas lieu. ${esc(m)} Cependant ta place est déjà réglée, nous te proposons donc deux choix :</p>`
     + `<p style="text-align:center;margin:22px 0"><a href="${rep}" style="display:inline-block;background:#156b54;color:#fff;text-decoration:none;padding:12px 22px;border-radius:26px;font-weight:700">Reporter sur une autre soirée</a></p>`
     + `<p style="text-align:center;margin:22px 0"><a href="${remb}" style="display:inline-block;background:#ffffff;color:#156b54;text-decoration:none;padding:11px 22px;border-radius:26px;font-weight:700;border:2px solid #156b54">Être remboursé(e)</a></p>`
-    + `<p style="color:#5b6b64;font-size:14px">En reportant, ta place est <b>garantie</b> sur la nouvelle date (sans repayer). Tu peux choisir plus tard : ton paiement reste au chaud tant que tu n'as rien cliqué.</p><p>L'équipe Soirée Match 💛</p>`;
-  transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: `Soirée Match du ${so.date_texte || so.code} annulée — reporter ou être remboursé(e) ?`, text: `Bonjour ${prenom},\n\nLa Soirée Match du ${so.date_texte || so.code} n'aura pas lieu. Ta place est déjà réglée — deux choix :\n\n• Reporter sur une autre soirée (place garantie, sans repayer) : ${rep}\n• Être remboursé(e) : ${remb}\n\nRien n'est débité de plus, et ton paiement reste au chaud tant que tu n'as pas choisi.\n\nL'équipe Soirée Match`, html: emailShell(inner, unsubLink(r.email)) }).catch(() => {});
+    + `<p style="color:#5b6b64;font-size:14px">En reportant, ta place est <b>garantie</b> sur la nouvelle date, sans rien repayer. Et si tu préfères être remboursé(e), c'est en un clic : ton paiement te revient intégralement, sans avoir à te justifier.</p>`
+    + `<p style="color:#5b6b64;font-size:14px">Rien ne presse — tu peux choisir plus tard, ton paiement reste au chaud tant que tu n'as rien cliqué.</p>`
+    + `<p>On est vraiment désolés de ce contretemps : on avait hâte de te recevoir. On se rattrape très vite, promis</p><p>L'équipe Soirée Match</p>`;
+  const text = `Bonjour ${prenom},\n\nLa Soirée Match du ${dateTxt} n'aura malheureusement pas lieu. ${m} Cependant ta place est déjà réglée, nous te proposons donc deux choix :\n\n• Reporter sur une autre soirée — ta place est garantie sur la nouvelle date, sans rien repayer :\n  ${rep}\n\n• Être remboursé(e) — en un clic, ton paiement te revient intégralement :\n  ${remb}\n\nRien ne presse : tu peux choisir plus tard, ton paiement reste au chaud tant que tu n'as rien cliqué.\n\nOn est vraiment désolés de ce contretemps : on avait hâte de te recevoir. On se rattrape très vite, promis.\n\nL'équipe Soirée Match`;
+  return { subject: `Soirée Match du ${dateTxt} annulée — reporter ou être remboursé(e) ?`, text, inner };
+}
+function mailCancelChoice(so, r, motif) {
+  if (!transporter) return;
+  const m = cancelChoiceMail(so, r, motif);
+  transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: m.subject, text: m.text, html: emailShell(m.inner, unsubLink(r.email)) }).catch(() => {});
 }
 function mailReportConfirme(so, i) {
   if (!transporter) return;
   const prenom = (i.prenom || '').trim() || 'à toi';
-  const inner = `<p>Bonjour ${esc(prenom)},</p><p>C'est fait : ton inscription est <b>reportée sur la Soirée Match du ${esc(so.date_texte || so.code)}</b>, et ta place y est <b>garantie</b> (rien à repayer).</p>${so.lieu ? `<p>📍 ${esc(so.lieu)}</p>` : ''}<p>À très vite,<br>L'équipe Soirée Match 💛</p>`;
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>C'est fait : ton inscription est <b>reportée sur la Soirée Match du ${esc(so.date_texte || so.code)}</b>, et ta place y est <b>garantie</b> (rien à repayer).</p>${so.lieu ? `<p>Lieu : ${esc(so.lieu)}</p>` : ''}<p>À très vite,<br>L'équipe Soirée Match</p>`;
   transporter.sendMail({ from: MAIL_FROM, to: i.email, subject: `Ton inscription est reportée — Soirée Match du ${so.date_texte || so.code}`, text: `Bonjour ${prenom},\n\nC'est fait : ton inscription est reportée sur la Soirée Match du ${so.date_texte || so.code}, place garantie, rien à repayer.${so.lieu ? `\nLieu : ${so.lieu}` : ''}\n\nÀ très vite,\nL'équipe Soirée Match`, html: emailShell(inner, unsubLink(i.email)) }).catch(() => {});
 }
-async function cancelWithChoice(so) {
+async function cancelWithChoice(so, motif) {
+  const m = (motif || '').trim() || cancelMotif(so);
   db.prepare('UPDATE soirees SET actif=0, annulee=1 WHERE id=?').run(so.id);
-  for (const r of db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id)) mailCancelChoice(so, r);
+  for (const r of db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id)) mailCancelChoice(so, r, m);
   for (const r of db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status IN ('waiting','hold')").all(so.id)) {
     db.prepare("UPDATE reservations SET status='cancelled' WHERE id=?").run(r.id);
-    mailCancel(so, r);
+    mailCancel(so, r, m);
   }
   if (adminMail() && transporter) transporter.sendMail({ from: MAIL_FROM, to: adminMail(), subject: `Soirée ${so.code} annulée — e-mails de choix envoyés`, text: `La soirée ${so.code} (${so.date_texte || ''}) est annulée. Chaque personne payée a reçu le choix report/remboursement.` }).catch(() => {});
 }
@@ -1418,14 +1439,14 @@ function mailWaitlist(so, i) {
   const prenom = (i.prenom || '').trim() || 'à toi';
   transporter.sendMail({ from: MAIL_FROM, to: i.email,
     subject: `Tu es sur la liste d'attente — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''}`,
-    text: `Bonjour ${prenom},\n\nMerci de ton intérêt pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nPour garantir une parité parfaite hommes/femmes, les places de ton profil sont complètes pour le moment. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.\n\nDès qu'une place se libère pour toi, tu reçois un e-mail avec un lien pour la confirmer — tu auras alors 3 heures pour la régler avant qu'elle ne passe à la personne suivante. Rien n'est débité tant que ta place n'est pas garantie.\n\nOn croise les doigts pour toi 💛\nTa team Soirée Match` }).catch(() => {});
+    text: `Bonjour ${prenom},\n\nMerci de ton intérêt pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nPour garantir une parité parfaite hommes/femmes, les places de ton profil sont complètes pour le moment. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.\n\nDès qu'une place se libère pour toi, tu reçois un e-mail avec un lien pour la confirmer — tu auras alors 3 heures pour la régler avant qu'elle ne passe à la personne suivante. Rien n'est débité tant que ta place n'est pas garantie.\n\nOn croise les doigts pour toi\nTa team Soirée Match` }).catch(() => {});
 }
 function mailSlotOpen(so, r) {
   if (!transporter) return;
   const prenom = (r.prenom || '').trim() || 'à toi';
   const link = payLink(r.id, r.email);
-  const txt = `Bonjour ${prenom},\n\nBonne nouvelle : une place vient de se libérer pour toi pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nVotre place pour cet événement a été réservée en priorité dans votre ordre d'inscription, cependant nous ne pouvons pas la réserver plus de trois heures pour éviter de bloquer d'autres personnes sur cette même liste.\n\n👉 Confirme et règle ta place ici : ${link}\n\nÀ très vite 💛\nTa team Soirée Match`;
-  const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:520px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55"><p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : une place vient de se libérer pour toi pour la <b>Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''}</b> !</p><p>Votre place pour cet événement a été réservée en priorité dans votre ordre d'inscription, cependant nous ne pouvons pas la réserver plus de trois heures pour éviter de bloquer d'autres personnes sur cette même liste.</p><p><a href="${link}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Confirmer et régler ma place</a></p><p style="font-size:13px;color:#8a9a99">Ce lien expire dans 3 heures.</p><p>À très vite 💛<br>Ta team Soirée Match</p></div>`;
+  const txt = `Bonjour ${prenom},\n\nBonne nouvelle : une place vient de se libérer pour toi pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nVotre place pour cet événement a été réservée en priorité dans votre ordre d'inscription, cependant nous ne pouvons pas la réserver plus de trois heures pour éviter de bloquer d'autres personnes sur cette même liste.\n\nConfirme et règle ta place ici : ${link}\n\nÀ très vite\nTa team Soirée Match`;
+  const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:520px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55"><p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : une place vient de se libérer pour toi pour la <b>Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''}</b> !</p><p>Votre place pour cet événement a été réservée en priorité dans votre ordre d'inscription, cependant nous ne pouvons pas la réserver plus de trois heures pour éviter de bloquer d'autres personnes sur cette même liste.</p><p><a href="${link}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Confirmer et régler ma place</a></p><p style="font-size:13px;color:#8a9a99">Ce lien expire dans 3 heures.</p><p>À très vite<br>Ta team Soirée Match</p></div>`;
   transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: `Une place s'est libérée — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} (3h pour confirmer)`, text: txt, html }).catch(() => {});
 }
 function mailRefund(so, r, reason) {
@@ -1436,19 +1457,107 @@ function mailRefund(so, r, reason) {
     : `nous n'avons pas pu confirmer ta place pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} : il nous manquait une personne du sexe opposé pour garder une parité parfaite`;
   transporter.sendMail({ from: MAIL_FROM, to: r.email,
     subject: `Remboursement — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''}`,
-    text: `Bonjour ${prenom},\n\nOn est désolés : ${why}.\n\nTon paiement est intégralement remboursé — il réapparaîtra sur ton moyen de paiement d'ici quelques jours (le délai dépend de ta banque).\n\nOn espère te voir à une prochaine soirée — on t'avertira dès qu'une nouvelle date de ton profil s'ouvre 💛\nTa team Soirée Match` }).catch(() => {});
+    text: `Bonjour ${prenom},\n\nOn est désolés : ${why}.\n\nTon paiement est intégralement remboursé — il réapparaîtra sur ton moyen de paiement d'ici quelques jours (le délai dépend de ta banque).\n\nOn espère te voir à une prochaine soirée — on t'avertira dès qu'une nouvelle date de ton profil s'ouvre\nTa team Soirée Match` }).catch(() => {});
 }
-function mailCancel(so, r) {
-  if (!transporter) return;
+// Contenu de l'e-mail d'annulation aux personnes qui n'ont rien payé — partagé par l'envoi et l'aperçu
+function cancelSimpleMail(so, r, motif) {
   const prenom = (r.prenom || '').trim() || 'à toi';
-  transporter.sendMail({ from: MAIL_FROM, to: r.email,
-    subject: `Soirée annulée — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''}`,
-    text: `Bonjour ${prenom},\n\nLa Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} a dû être annulée faute d'un effectif suffisant. Tu n'avais pas encore réglé de place, donc rien n'a été débité.\n\nOn t'avertira dès qu'une nouvelle date de ton profil s'ouvre 💛\nTa team Soirée Match` }).catch(() => {});
+  const dateTxt = so.date_texte || so.code;
+  const m = (motif || '').trim() || cancelMotif(so);
+  const person = { prenom: r.prenom, nom: r.nom, email: r.email, genre: r.genre, recherche: r.recherche, annee: r.annee };
+  let futs = [];
+  try { futs = eligibleFutureSoirees(person, so.id); } catch { futs = []; }
+  const cartes = futs.map((f) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:12px 0"><tr><td style="border:1px solid #d0aa54;border-radius:10px;padding:14px 16px"><div style="font-weight:700;color:#156b54">${esc(f.date_texte || f.code)}</div>${f.lieu ? `<div style="color:#5b6b64;font-size:14px;margin-top:2px">${esc(f.lieu)}</div>` : ''}${f.tranche ? `<div style="color:#5b6b64;font-size:14px">Tranche d'âge : ${esc(f.tranche)} ans (souplesse de 3 ans)</div>` : ''}<div style="margin-top:10px"><a href="${soireeLink(f.code)}" style="display:inline-block;background:#156b54;color:#fff;text-decoration:none;padding:10px 20px;border-radius:24px;font-weight:700">Réserver ma place</a></div></td></tr></table>`).join('');
+  const inner = `<p>Bonjour ${esc(prenom)},</p>`
+    + `<p>La <b>Soirée Match du ${esc(dateTxt)}</b> n'aura malheureusement pas lieu. ${esc(m)}</p>`
+    + `<p>Tu n'avais pas encore réglé ta place : <b>rien n'a été débité</b> et tu n'as rien à faire de ton côté.</p>`
+    + (futs.length
+      ? `<p>Bonne nouvelle malgré tout : ${futs.length > 1 ? 'de nouvelles dates sont déjà ouvertes' : 'une nouvelle date est déjà ouverte'} pour ta tranche d'âge. Tu peux ${futs.length > 1 ? 'y' : 'y'} réserver ta place dès maintenant :</p>${cartes}`
+      : `<p>On te préviendra dès qu'une nouvelle date correspondant à ton profil s'ouvre.</p>`)
+    + `<p>On espère vraiment t'y voir.</p><p>L'équipe Soirée Match</p>`;
+  const listeTxt = futs.map((f) => `• ${f.date_texte || f.code}${f.lieu ? ` — ${f.lieu}` : ''}${f.tranche ? ` (${f.tranche} ans, souplesse de 3 ans)` : ''}\n  Réserver : ${soireeLink(f.code)}`).join('\n\n');
+  const text = `Bonjour ${prenom},\n\nLa Soirée Match du ${dateTxt} n'aura malheureusement pas lieu. ${m}\n\nTu n'avais pas encore réglé ta place : rien n'a été débité et tu n'as rien à faire de ton côté.\n\n`
+    + (futs.length
+      ? `Bonne nouvelle malgré tout : ${futs.length > 1 ? 'de nouvelles dates sont déjà ouvertes' : 'une nouvelle date est déjà ouverte'} pour ta tranche d'âge :\n\n${listeTxt}\n\n`
+      : `On te préviendra dès qu'une nouvelle date correspondant à ton profil s'ouvre.\n\n`)
+    + `On espère vraiment t'y voir.\n\nL'équipe Soirée Match`;
+  return { subject: `Soirée Match du ${dateTxt} annulée`, text, inner };
+}
+function mailCancel(so, r, motif) {
+  if (!transporter) return;
+  const m = cancelSimpleMail(so, r, motif);
+  transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: m.subject, text: m.text, html: emailShell(m.inner, unsubLink(r.email)) }).catch(() => {});
 }
 function waitlistPage(so) {
   return `${siteHead('Liste d\'attente — Soirée Match')}<div class=box><h1>Tu es sur la liste d'attente ⏳</h1><p>Pour garder une <b>parité parfaite</b> hommes/femmes, les places de ton profil sont complètes pour l'instant. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.</p><p>Dès qu'une place se libère pour toi, on t'envoie un e-mail avec un lien — tu auras <b>3 heures</b> pour la confirmer. Aucun paiement n'est demandé tant que ta place n'est pas garantie. 💛</p></div></html>`;
 }
 
+// ---------- Aperçu avant annulation ----------
+function cancelPreviewBody(so, motif, o) {
+  const m = (motif || '').trim() || cancelMotif(so);
+  const paid = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id);
+  const autres = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status IN ('waiting','hold')").all(so.id);
+  const sample = paid[0] || { id: 0, prenom: 'Julie', nom: '', email: 'exemple@soireematch.com' };
+  const mail = cancelChoiceMail(so, sample, m);
+  const html = emailShell(mail.inner, unsubLink(sample.email || 'exemple@soireematch.com'));
+  const sample2 = autres[0] || { id: 0, prenom: 'Paul', nom: '', email: 'exemple@soireematch.com', genre: 'Homme', recherche: 'Des femmes', annee: new Date().getFullYear() - 45 };
+  const mail2 = cancelSimpleMail(so, sample2, m);
+  const html2 = emailShell(mail2.inner, unsubLink(sample2.email || 'exemple@soireematch.com'));
+  const liste = (arr) => arr.length
+    ? '<ul style="margin:6px 0 0;padding-left:20px">' + arr.map((r) => `<li>${esc(((r.prenom || '') + ' ' + (r.nom || '')).trim())} — ${esc(r.email)}</li>`).join('') + '</ul>'
+    : '<p style="margin:6px 0 0;color:#7b8a83">Personne.</p>';
+  const box = 'background:#fff;border:1px solid #d7e6df;border-radius:12px;padding:16px;margin:16px 0';
+  return `
+  <p style="margin:0 0 14px"><a href="${o.back}" style="color:#156b54">← Retour</a></p>
+  <h2 style="margin:0 0 6px">Annuler la Soirée Match du ${esc(so.date_texte || so.code)}</h2>
+  <p style="color:#c0392b;font-weight:700;margin:0">Rien n'est envoyé tant que tu n'as pas cliqué sur le bouton rouge en bas de page.</p>
+
+  <div style="${box}">
+    <p style="margin:0"><b>${paid.length}</b> personne(s) ayant payé recevront l'e-mail « reporter ou être remboursé(e) » :</p>
+    ${liste(paid)}
+    <p style="margin:14px 0 0"><b>${autres.length}</b> personne(s) en liste d'attente ou à confirmer recevront un simple e-mail d'annulation :</p>
+    ${liste(autres)}
+    <p style="margin:14px 0 0;color:#5b6b64;font-size:14px">Aucun remboursement n'est déclenché automatiquement : chaque personne choisit elle-même. Les inscrits qui n'ont pas réservé cette soirée ne reçoivent rien.</p>
+  </div>
+
+  <form method=post action="${o.action}" style="${box}" onsubmit="return confirm('Envoyer les e-mails et annuler définitivement la soirée ?')">
+    ${o.hidden}
+    <label style="display:block;font-weight:700;margin-bottom:6px">Raison de l'annulation — elle apparaît telle quelle dans l'e-mail</label>
+    <textarea name=motif rows=3 style="width:100%;box-sizing:border-box;font:inherit;padding:8px;border:1px solid #c8d8d2;border-radius:8px">${esc(m)}</textarea>
+    <p style="color:#5b6b64;font-size:14px;margin:8px 0 0">Modifie le texte puis clique « Rafraîchir l'aperçu » pour le relire dans l'e-mail. Le bouton rouge, lui, envoie pour de bon.</p>
+    <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+      <button type=submit formmethod=get formaction="${o.refresh}" style="padding:10px 18px;border:1px solid #156b54;background:#fff;color:#156b54;border-radius:22px;font-weight:700;cursor:pointer">↻ Rafraîchir l'aperçu</button>
+      <button style="padding:10px 18px;border:0;background:#c0392b;color:#fff;border-radius:22px;font-weight:700;cursor:pointer">✕ Annuler la soirée et envoyer les e-mails</button>
+    </div>
+  </form>
+
+  <div style="${box}">
+    <p style="margin:0 0 8px"><b>Aperçu 1/2 — aux personnes ayant payé.</b> Objet : <i>${esc(mail.subject)}</i></p>
+    <iframe srcdoc="${esc(html)}" style="width:100%;height:780px;border:1px solid #d7e6df;border-radius:8px;background:#fff"></iframe>
+  </div>
+  <div style="${box}">
+    <p style="margin:0 0 8px"><b>Aperçu 2/2 — aux personnes sans paiement</b> (liste d'attente / à confirmer). Objet : <i>${esc(mail2.subject)}</i></p>
+    <p style="color:#5b6b64;font-size:14px;margin:0 0 8px">Les prochaines soirées affichées sont celles qui correspondent au profil de chaque destinataire — l'exemple ci-dessous utilise ${esc((sample2.prenom || 'un profil type'))}.</p>
+    <iframe srcdoc="${esc(html2)}" style="width:100%;height:780px;border:1px solid #d7e6df;border-radius:8px;background:#fff"></iframe>
+  </div>`;
+}
+function cancelPreviewPage(so, motif) {
+  return `${pageHead('Annuler la soirée')}<div class=wrap>${cancelPreviewBody(so, motif, {
+    action: '/admin/soirees/cancel',
+    refresh: '/admin/soirees/cancel',
+    hidden: `<input type=hidden name=id value=${so.id}>`,
+    back: `/admin/soirees/reservations?id=${so.id}`,
+  })}</div></html>`;
+}
+function decisionCancelPage(so, t, motif) {
+  const q = `sid=${so.id}&t=${encodeURIComponent(t)}`;
+  return `${siteHead('Annuler la soirée — Soirée Match')}<div class=box style="max-width:720px;text-align:left">${cancelPreviewBody(so, motif, {
+    action: `/decision/cancel?${q}`,
+    refresh: '/decision/cancel',
+    hidden: `<input type=hidden name=sid value=${so.id}><input type=hidden name=t value="${esc(t)}">`,
+    back: `/decision?${q}`,
+  })}</div></html>`;
+}
 function decisionPage(so, t) {
   const q = `sid=${so.id}&t=${encodeURIComponent(t)}`;
   const stat = isParity(so) ? `${paidCount(so.id,'Femme')} femmes / ${paidCount(so.id,'Homme')} hommes payés (min ${minSexe(so)}/sexe)` : `${paidCount(so.id,null)} payés (min ${minTotal(so)})`;
@@ -1458,7 +1567,7 @@ function decisionPage(so, t) {
     ${so.annulee ? '<p style="color:#c0392b;font-weight:700">Cette soirée est déjà annulée.</p>' : `
     <form method=post action="/decision/confirm?${q}" style="margin:16px 0"><button class=btn>✅ Confirmer la soirée &amp; prévenir les participants</button></form>
     <form method=post action="/decision/close?${q}" style="margin:16px 0"><button class=btn style="background:#8a6f5c">🔒 Fermer les inscriptions (sans annuler)</button></form>
-    <form method=post action="/decision/cancel?${q}" onsubmit="return confirm('Annuler la soirée ? Chaque personne payée recevra le choix report ou remboursement.')" style="margin:16px 0"><button class=btn style="background:#c0392b">✕ Annuler la soirée</button></form>`}
+    <p style="margin:16px 0"><a class=btn style="background:#c0392b;display:inline-block;text-decoration:none" href="/decision/cancel?${q}">✕ Annuler la soirée…</a></p>`}
   </div></html>`;
 }
 function reportPage(r, t, futs) {
@@ -1633,7 +1742,11 @@ const server = http.createServer(async (req, res) => {
     if (p === '/decision' && req.method === 'GET') return send(res, 200, decisionPage(so, t));
     if (p === '/decision/confirm' && req.method === 'POST') { await readBody(req); confirmSoiree(so); return send(res, 200, pubMsg('Soirée confirmée ✓', 'Les participants viennent d\'être prévenus que la soirée a lieu. 💛')); }
     if (p === '/decision/close' && req.method === 'POST') { await readBody(req); db.prepare('UPDATE soirees SET actif=0 WHERE id=?').run(so.id); return send(res, 200, pubMsg('Inscriptions fermées', 'Plus aucune nouvelle inscription pour cette soirée. Tu peux toujours en rouvrir une depuis l\'admin.')); }
-    if (p === '/decision/cancel' && req.method === 'POST') { await readBody(req); if (!so.annulee) await cancelWithChoice(so); return send(res, 200, pubMsg('Soirée annulée', 'Chaque personne payée a reçu le choix : reporter ou être remboursée. 💛')); }
+    if (p === '/decision/cancel' && req.method === 'GET') {
+      if (so.annulee) return send(res, 200, pubMsg('Déjà annulée', 'Cette soirée est déjà annulée.'));
+      return send(res, 200, decisionCancelPage(so, t, url.searchParams.get('motif') || ''));
+    }
+    if (p === '/decision/cancel' && req.method === 'POST') { const d = parseForm(await readBody(req)); if (!so.annulee) await cancelWithChoice(so, d.motif || ''); return send(res, 200, pubMsg('Soirée annulée', 'Chaque personne payée a reçu le choix : reporter ou être remboursée. 💛')); }
     return send(res, 404, 'Introuvable');
   }
 
@@ -1876,10 +1989,18 @@ const server = http.createServer(async (req, res) => {
       await tick();
       return send(res, 302, '', { Location: id ? `/admin/soirees/reservations?id=${id}&done=1` : '/admin/soirees' });
     }
-    if (p === '/admin/soirees/cancel' && req.method === 'POST') {
-      const id = Number(parseForm(await readBody(req)).id);
+    if (p === '/admin/soirees/cancel' && req.method === 'GET') {
+      const id = Number(url.searchParams.get('id') || 0);
       const s = id && getSoireeById(id);
-      if (s && !s.annulee) await cancelWithChoice(s);
+      if (!s) return send(res, 302, '', { Location: '/admin/soirees' });
+      if (s.annulee) return send(res, 302, '', { Location: `/admin/soirees/reservations?id=${id}` });
+      return send(res, 200, cancelPreviewPage(s, url.searchParams.get('motif') || ''));
+    }
+    if (p === '/admin/soirees/cancel' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      const id = Number(d.id);
+      const s = id && getSoireeById(id);
+      if (s && !s.annulee) await cancelWithChoice(s, d.motif || '');
       return send(res, 302, '', { Location: id ? `/admin/soirees/reservations?id=${id}&done=1` : '/admin/soirees' });
     }
     if (p === '/admin/soirees/confirm' && req.method === 'POST') {
