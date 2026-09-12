@@ -325,6 +325,7 @@ function verifyStripeSig(payload, header, secret) {
   } catch { return false; }
 }
 async function startReservation(res, so, person) {
+  if (!so || so.annulee || !so.actif) return send(res, 200, pubMsg('Soirée indisponible', 'Cette soirée n\'est plus ouverte aux réservations. Les prochaines dates sont sur soireematch.com.'));
   const email = person.email, genre = person.genre;
   // déjà confirmé ?
   if (db.prepare("SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND status='paid'").get(so.id, email))
@@ -1782,10 +1783,12 @@ const server = http.createServer(async (req, res) => {
     const so = getSoiree(code);
     if (req.method === 'GET') {
       if (!so) return send(res, 404, pubMsg('Soirée introuvable', 'Ce lien de réservation n\'existe pas ou plus. Écris-nous à contact@soireematch.com.'));
+      if (so.annulee) return send(res, 200, pubMsg('Soirée annulée', 'Cette soirée a été annulée par manque de participants. Si tu avais réservé et payé ta place, tu as reçu un e-mail pour la déplacer sur une autre date ou être remboursé(e). Les prochaines dates sont sur soireematch.com.'));
       if (!so.actif) return send(res, 200, pubMsg('Réservations fermées', 'Les réservations pour cette soirée ne sont pas ouvertes pour le moment.'));
       return send(res, 200, soireePage(so));
     }
     if (req.method === 'POST') {
+      if (so && so.annulee) return send(res, 200, pubMsg('Soirée annulée', 'Cette soirée a été annulée par manque de participants. Si tu avais réservé et payé ta place, tu as reçu un e-mail pour la déplacer sur une autre date ou être remboursé(e). Les prochaines dates sont sur soireematch.com.'));
       if (!so || !so.actif) return send(res, 404, pubMsg('Soirée indisponible', 'Ce lien n\'est plus valable.'));
       const d = parseForm(await readBody(req));
       if (d.website) return send(res, 200, soireeOkPage(so));   // honeypot
@@ -1825,6 +1828,8 @@ const server = http.createServer(async (req, res) => {
     const person = valid ? db.prepare('SELECT * FROM inscriptions WHERE lower(email)=lower(?)').get(email) : null;
     const so = getSoireeById(Number(d.soiree));
     if (!person || !so) return send(res, 200, pubMsg('Oups', 'Réservation impossible. Réessaie depuis le lien de ton e-mail.'));
+    if (so.annulee) return send(res, 200, pubMsg('Soirée annulée', 'Cette soirée a été annulée par manque de participants. Si tu avais réservé et payé ta place, tu as reçu un e-mail pour la déplacer sur une autre date ou être remboursé(e). Les prochaines dates sont sur soireematch.com.'));
+    if (!so.actif) return send(res, 200, pubMsg('Réservations fermées', 'Les réservations pour cette soirée ne sont plus ouvertes. Les prochaines dates sont sur soireematch.com.'));
     return startReservation(res, so, { prenom: person.prenom, nom: person.nom, email: person.email, tel: person.tel, annee: person.annee, genre: person.genre, recherche: person.recherche });
   }
   // Confirmer/payer une place proposée depuis la liste d'attente
