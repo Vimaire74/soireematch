@@ -241,6 +241,7 @@ try { db.exec('ALTER TABLE reservations ADD COLUMN priority INTEGER DEFAULT 0');
 try { db.exec('ALTER TABLE reservations ADD COLUMN stripe_payment_intent TEXT'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN forced INTEGER DEFAULT 0'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN paid_at TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE reservations ADD COLUMN refund_error TEXT'); } catch { /* déjà là */ }
 try { db.exec("UPDATE reservations SET status = CASE WHEN COALESCE(paid,0)=1 THEN 'paid' ELSE 'expired' END WHERE status IS NULL"); } catch {}
 
 const getSoiree = (code) => db.prepare('SELECT * FROM soirees WHERE code=?').get(code);
@@ -890,7 +891,7 @@ function reservationsPage(s, done) {
   const cnt = (st, g) => list.filter((r) => r.status === st && (!g || r.genre === g)).length;
   const par = isParity(s);
   const lbl = { paid: '✅ payé', hold: '⏳ à confirmer (3h)', waiting: "🕒 liste d'attente", refunded: '↩ remboursé', expired: '✕ expiré', cancelled: '✕ annulé' };
-  const rows = list.map((r, i) => `<tr><td>${i + 1}</td><td>${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.genre)}</td><td>${lbl[r.status] || esc(r.status || '')}</td><td>${r.status === 'waiting' ? `<form method=post action=/admin/soirees/resa/allow style="margin:0 0 4px" onsubmit="return confirm('Autoriser ${esc(r.prenom || '')} à payer, hors parité ? (peut déséquilibrer la soirée)')"><input type=hidden name=id value=${r.id}><button style="padding:4px 10px;font-size:12px;background:#156b54;color:#fff">Autoriser à payer</button></form>` : ''}${['paid', 'hold', 'waiting'].includes(r.status) ? `<form method=post action=/admin/soirees/resa/remove style="margin:0" onsubmit="return confirm('Retirer ${esc((r.prenom || '') + ' ' + (r.nom || ''))} ?${r.status === 'paid' ? ' Cette personne sera remboursée.' : ''}')"><input type=hidden name=id value=${r.id}><button class=danger style="padding:4px 10px;font-size:12px">Retirer</button></form>` : ''}</td></tr>`).join('');
+  const rows = list.map((r, i) => `<tr><td>${i + 1}</td><td>${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.genre)}</td><td>${lbl[r.status] || esc(r.status || '')}${r.refund_error ? `<div style="color:#c0392b;font-size:12px;font-weight:700" title="${esc(r.refund_error)}">⚠ remboursement échoué</div>` : ''}</td><td>${r.status === 'waiting' ? `<form method=post action=/admin/soirees/resa/allow style="margin:0 0 4px" onsubmit="return confirm('Autoriser ${esc(r.prenom || '')} à payer, hors parité ? (peut déséquilibrer la soirée)')"><input type=hidden name=id value=${r.id}><button style="padding:4px 10px;font-size:12px;background:#156b54;color:#fff">Autoriser à payer</button></form>` : ''}${['paid', 'hold', 'waiting'].includes(r.status) ? `<form method=post action=/admin/soirees/resa/remove style="margin:0" onsubmit="return confirm('Retirer ${esc((r.prenom || '') + ' ' + (r.nom || ''))} ?${r.status === 'paid' ? ' Cette personne sera remboursée.' : ''}')"><input type=hidden name=id value=${r.id}><button class=danger style="padding:4px 10px;font-size:12px">Retirer</button></form>` : ''}</td></tr>`).join('');
   const viable = isViable(s);
   const capLine = par
     ? `Parité stricte — <b>${cnt('paid', 'Femme')}</b> F / <b>${cnt('paid', 'Homme')}</b> H payés · min ${minSexe(s)}/sexe · max ${capSexe(s)}/sexe · ${viable ? '<span style="color:#1c7a3f">✔ viable</span>' : `<span style="color:#c0392b">✘ sous le minimum (manque ${esc(deficitTxt(s))})</span>`}`
@@ -1291,12 +1292,58 @@ function expireHolds(so) {
   const info = db.prepare("UPDATE reservations SET status='expired' WHERE soiree_id=? AND status='hold' AND hold_expires<=?").run(so.id, nowIso());
   return info.changes;
 }
+// Rend true si le remboursement est bien passé chez Stripe (ou s'il n'y avait rien à rembourser).
+// En cas d'échec : la réservation reste « payée », aucun e-mail de remboursement n'est envoyé au client,
+// et Marc reçoit une alerte pour traiter le cas à la main dans Stripe.
 async function refundResa(resa, so, reason) {
-  try {
-    if (PAY_ON && resa.stripe_payment_intent) await stripeApi('POST', '/v1/refunds', { payment_intent: resa.stripe_payment_intent });
-  } catch (e) { console.error('Remboursement Stripe échoué', resa.id, e.message); }
-  db.prepare("UPDATE reservations SET status='refunded', paid=0 WHERE id=?").run(resa.id);
+  if (PAY_ON && resa.stripe_payment_intent) {
+    try {
+      await stripeApi('POST', '/v1/refunds', { payment_intent: resa.stripe_payment_intent });
+    } catch (e) {
+      const msg = (e && e.message) || String(e);
+      console.error('Remboursement Stripe échoué', resa.id, msg);
+      try { db.prepare('UPDATE reservations SET refund_error=? WHERE id=?').run(`${nowIso().slice(0, 16).replace('T', ' ')} — ${msg}`, resa.id); } catch {}
+      mailAdminRefundFailed(so, resa, reason, msg);
+      return false;
+    }
+  }
+  db.prepare("UPDATE reservations SET status='refunded', paid=0, refund_error=NULL WHERE id=?").run(resa.id);
   mailRefund(so, resa, reason);
+  return true;
+}
+// Alerte à Marc : remboursement Stripe en échec — à traiter à la main
+function mailAdminRefundFailed(so, r, reason, msg) {
+  const to = adminMail();
+  if (!to || !transporter) return;
+  const qui = `${(r.prenom || '').trim()} ${(r.nom || '').trim()}`.trim() || r.email;
+  transporter.sendMail({ from: MAIL_FROM, to,
+    subject: `ÉCHEC remboursement Stripe — ${qui} — Soirée Match du ${so.date_texte || so.code || '?'}`,
+    text: `Le remboursement automatique n'a PAS fonctionné.
+
+Personne : ${qui}
+E-mail : ${r.email}
+Réservation n° ${r.id} — soirée ${so.code || ''} (${so.date_texte || ''})
+Motif du remboursement : ${reason}
+Erreur Stripe : ${msg}
+
+La réservation est restée « payée » et la personne n'a PAS reçu d'e-mail de remboursement.
+À faire : rembourser à la main dans le dashboard Stripe (paiement ${r.stripe_payment_intent || '—'}), puis cliquer « Retirer » dans l'admin si besoin.` }).catch(() => {});
+}
+// Avertissement à Marc : quelqu'un vient de demander son remboursement
+function mailAdminRefundRequest(so, r, ok) {
+  const to = adminMail();
+  if (!to || !transporter) return;
+  const qui = `${(r.prenom || '').trim()} ${(r.nom || '').trim()}`.trim() || r.email;
+  transporter.sendMail({ from: MAIL_FROM, to,
+    subject: `${ok ? 'Remboursement demandé et effectué' : 'ÉCHEC remboursement demandé'} — ${qui} — Soirée Match du ${so.date_texte || so.code || '?'}`,
+    text: `${qui} (${r.email}) vient de demander le remboursement de sa place.
+
+Soirée : ${so.code || ''} (${so.date_texte || ''})
+Réservation n° ${r.id}
+
+${ok
+      ? "Le remboursement a été envoyé à Stripe automatiquement : la personne a reçu l'e-mail de confirmation, l'argent revient sur son moyen de paiement d'ici quelques jours. Rien à faire de ton côté."
+      : "⚠ Le remboursement automatique a ÉCHOUÉ. La personne a été prévenue que tu traites sa demande à la main. Va la rembourser dans le dashboard Stripe."}` }).catch(() => {});
 }
 // Réconciliation ±1 : rembourse le surplus (les dernier·e·s arrivé·e·s du sexe majoritaire)
 async function reconcile(so) {
@@ -1353,26 +1400,51 @@ function cancelMotif(so) {
   }
   return "Nous sommes obligés d'annuler car nous n'avons pas reçu assez d'inscriptions pour cette date.";
 }
+// Soirées de remplacement proposées dans les e-mails d'annulation.
+// opts = { codes: [..] | null (toutes), force: bool }. force = proposer même hors profil
+// (réservé à l'e-mail des non-payés : la page /report, elle, n'accepte que les soirées du profil).
+function futureSoireesOpen(excludeId) {
+  const now = nowMs();
+  return db.prepare('SELECT * FROM soirees WHERE actif=1 AND COALESCE(annulee,0)=0').all()
+    .filter((f) => f.id !== excludeId && (!f.date_start || new Date(f.date_start).getTime() > now));
+}
+function proposedSoirees(person, so, opts, allowForce) {
+  const codes = opts && Array.isArray(opts.codes) ? opts.codes : null;
+  const force = allowForce && !!(opts && opts.force);
+  let list = [];
+  try { list = force ? futureSoireesOpen(so.id) : eligibleFutureSoirees(person, so.id); } catch { list = []; }
+  return codes ? list.filter((f) => codes.includes(f.code)) : list;
+}
 // Contenu de l'e-mail « reporter ou être remboursé(e) » — partagé par l'envoi et la page d'aperçu
-function cancelChoiceMail(so, r, motif) {
+function cancelChoiceMail(so, r, motif, opts) {
   const prenom = (r.prenom || '').trim() || 'à toi';
   const dateTxt = so.date_texte || so.code;
   const m = (motif || '').trim() || cancelMotif(so);
   const rep = `${SITE_URL}/report?rid=${r.id}&t=${resaTok(r.id)}`;
   const remb = `${SITE_URL}/rembourser?rid=${r.id}&t=${resaTok(r.id)}`;
+  const person = { prenom: r.prenom, nom: r.nom, email: r.email, genre: r.genre, recherche: r.recherche, annee: r.annee };
+  const futs = proposedSoirees(person, so, opts, false);
+  const dates = futs.map((f) => `<b>${esc(f.date_texte || f.code)}</b>${f.lieu ? ` — ${esc(f.lieu)}` : ''}`);
+  const datesTxt = futs.map((f) => `• ${f.date_texte || f.code}${f.lieu ? ` — ${f.lieu}` : ''}`).join('\n');
+  const annonce = futs.length
+    ? `<p>${futs.length > 1 ? 'Nos prochaines dates pour ton profil' : 'Notre prochaine date pour ton profil'} : ${dates.join(' · ')}. Tu peux y reporter ta place sans rien repayer.</p>`
+    : '';
   const inner = `<p>Bonjour ${esc(prenom)},</p>`
     + `<p>La <b>Soirée Match du ${esc(dateTxt)}</b> n'aura malheureusement pas lieu. ${esc(m)} Cependant ta place est déjà réglée, nous te proposons donc deux choix :</p>`
+    + annonce
     + `<p style="text-align:center;margin:22px 0"><a href="${rep}" style="display:inline-block;background:#156b54;color:#fff;text-decoration:none;padding:12px 22px;border-radius:26px;font-weight:700">Reporter sur une autre soirée</a></p>`
     + `<p style="text-align:center;margin:22px 0"><a href="${remb}" style="display:inline-block;background:#ffffff;color:#156b54;text-decoration:none;padding:11px 22px;border-radius:26px;font-weight:700;border:2px solid #156b54">Être remboursé(e)</a></p>`
     + `<p style="color:#5b6b64;font-size:14px">En reportant, ta place est <b>garantie</b> sur la nouvelle date, sans rien repayer. Et si tu préfères être remboursé(e), c'est en un clic : ton paiement te revient intégralement, sans avoir à te justifier.</p>`
     + `<p style="color:#5b6b64;font-size:14px">Rien ne presse — tu peux choisir plus tard, ton paiement reste au chaud tant que tu n'as rien cliqué.</p>`
     + `<p>On est vraiment désolés de ce contretemps : on avait hâte de te recevoir. On se rattrape très vite, promis</p><p>L'équipe Soirée Match</p>`;
-  const text = `Bonjour ${prenom},\n\nLa Soirée Match du ${dateTxt} n'aura malheureusement pas lieu. ${m} Cependant ta place est déjà réglée, nous te proposons donc deux choix :\n\n• Reporter sur une autre soirée — ta place est garantie sur la nouvelle date, sans rien repayer :\n  ${rep}\n\n• Être remboursé(e) — en un clic, ton paiement te revient intégralement :\n  ${remb}\n\nRien ne presse : tu peux choisir plus tard, ton paiement reste au chaud tant que tu n'as rien cliqué.\n\nOn est vraiment désolés de ce contretemps : on avait hâte de te recevoir. On se rattrape très vite, promis.\n\nL'équipe Soirée Match`;
+  const text = `Bonjour ${prenom},\n\nLa Soirée Match du ${dateTxt} n'aura malheureusement pas lieu. ${m} Cependant ta place est déjà réglée, nous te proposons donc deux choix :\n`
+    + (futs.length ? `\n${futs.length > 1 ? 'Nos prochaines dates pour ton profil' : 'Notre prochaine date pour ton profil'} :\n${datesTxt}\n` : '')
+    + `\n• Reporter sur une autre soirée — ta place est garantie sur la nouvelle date, sans rien repayer :\n  ${rep}\n\n• Être remboursé(e) — en un clic, ton paiement te revient intégralement :\n  ${remb}\n\nRien ne presse : tu peux choisir plus tard, ton paiement reste au chaud tant que tu n'as rien cliqué.\n\nOn est vraiment désolés de ce contretemps : on avait hâte de te recevoir. On se rattrape très vite, promis.\n\nL'équipe Soirée Match`;
   return { subject: `Soirée Match du ${dateTxt} annulée — reporter ou être remboursé(e) ?`, text, inner };
 }
-function mailCancelChoice(so, r, motif) {
+function mailCancelChoice(so, r, motif, opts) {
   if (!transporter) return;
-  const m = cancelChoiceMail(so, r, motif);
+  const m = cancelChoiceMail(so, r, motif, opts);
   transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: m.subject, text: m.text, html: emailShell(m.inner, unsubLink(r.email)) }).catch(() => {});
 }
 function mailReportConfirme(so, i) {
@@ -1381,13 +1453,13 @@ function mailReportConfirme(so, i) {
   const inner = `<p>Bonjour ${esc(prenom)},</p><p>C'est fait : ton inscription est <b>reportée sur la Soirée Match du ${esc(so.date_texte || so.code)}</b>, et ta place y est <b>garantie</b> (rien à repayer).</p>${so.lieu ? `<p>Lieu : ${esc(so.lieu)}</p>` : ''}<p>À très vite,<br>L'équipe Soirée Match</p>`;
   transporter.sendMail({ from: MAIL_FROM, to: i.email, subject: `Ton inscription est reportée — Soirée Match du ${so.date_texte || so.code}`, text: `Bonjour ${prenom},\n\nC'est fait : ton inscription est reportée sur la Soirée Match du ${so.date_texte || so.code}, place garantie, rien à repayer.${so.lieu ? `\nLieu : ${so.lieu}` : ''}\n\nÀ très vite,\nL'équipe Soirée Match`, html: emailShell(inner, unsubLink(i.email)) }).catch(() => {});
 }
-async function cancelWithChoice(so, motif) {
+async function cancelWithChoice(so, motif, opts) {
   const m = (motif || '').trim() || cancelMotif(so);
   db.prepare('UPDATE soirees SET actif=0, annulee=1 WHERE id=?').run(so.id);
-  for (const r of db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id)) mailCancelChoice(so, r, m);
+  for (const r of db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id)) mailCancelChoice(so, r, m, opts);
   for (const r of db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status IN ('waiting','hold')").all(so.id)) {
     db.prepare("UPDATE reservations SET status='cancelled' WHERE id=?").run(r.id);
-    mailCancel(so, r, m);
+    mailCancel(so, r, m, opts);
   }
   if (adminMail() && transporter) transporter.sendMail({ from: MAIL_FROM, to: adminMail(), subject: `Soirée ${so.code} annulée — e-mails de choix envoyés`, text: `La soirée ${so.code} (${so.date_texte || ''}) est annulée. Chaque personne payée a reçu le choix report/remboursement.` }).catch(() => {});
 }
@@ -1445,8 +1517,8 @@ function mailSlotOpen(so, r) {
   if (!transporter) return;
   const prenom = (r.prenom || '').trim() || 'à toi';
   const link = payLink(r.id, r.email);
-  const txt = `Bonjour ${prenom},\n\nBonne nouvelle : une place vient de se libérer pour toi pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nVotre place pour cet événement a été réservée en priorité dans votre ordre d'inscription, cependant nous ne pouvons pas la réserver plus de trois heures pour éviter de bloquer d'autres personnes sur cette même liste.\n\nConfirme et règle ta place ici : ${link}\n\nÀ très vite\nTa team Soirée Match`;
-  const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:520px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55"><p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : une place vient de se libérer pour toi pour la <b>Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''}</b> !</p><p>Votre place pour cet événement a été réservée en priorité dans votre ordre d'inscription, cependant nous ne pouvons pas la réserver plus de trois heures pour éviter de bloquer d'autres personnes sur cette même liste.</p><p><a href="${link}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Confirmer et régler ma place</a></p><p style="font-size:13px;color:#8a9a99">Ce lien expire dans 3 heures.</p><p>À très vite<br>Ta team Soirée Match</p></div>`;
+  const txt = `Bonjour ${prenom},\n\nBonne nouvelle : une place vient de se libérer pour toi pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nTa place a été réservée en priorité, dans ton ordre d'inscription, mais nous ne pouvons pas la garder plus de trois heures pour ne pas bloquer les autres personnes de la liste.\n\nConfirme et règle ta place ici : ${link}\n\nÀ très vite\nTa team Soirée Match`;
+  const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:520px;margin:auto;color:#1e2f30;font-size:15px;line-height:1.55"><p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : une place vient de se libérer pour toi pour la <b>Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''}</b> !</p><p>Ta place a été réservée en priorité, dans ton ordre d'inscription, mais nous ne pouvons pas la garder plus de trois heures pour ne pas bloquer les autres personnes de la liste.</p><p><a href="${link}" style="display:inline-block;background:#2f7d8a;color:#fff;text-decoration:none;padding:12px 24px;border-radius:30px;font-weight:600">Confirmer et régler ma place</a></p><p style="font-size:13px;color:#8a9a99">Ce lien expire dans 3 heures.</p><p>À très vite<br>Ta team Soirée Match</p></div>`;
   transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: `Une place s'est libérée — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} (3h pour confirmer)`, text: txt, html }).catch(() => {});
 }
 function mailRefund(so, r, reason) {
@@ -1460,13 +1532,12 @@ function mailRefund(so, r, reason) {
     text: `Bonjour ${prenom},\n\nOn est désolés : ${why}.\n\nTon paiement est intégralement remboursé — il réapparaîtra sur ton moyen de paiement d'ici quelques jours (le délai dépend de ta banque).\n\nOn espère te voir à une prochaine soirée — on t'avertira dès qu'une nouvelle date de ton profil s'ouvre\nTa team Soirée Match` }).catch(() => {});
 }
 // Contenu de l'e-mail d'annulation aux personnes qui n'ont rien payé — partagé par l'envoi et l'aperçu
-function cancelSimpleMail(so, r, motif) {
+function cancelSimpleMail(so, r, motif, opts) {
   const prenom = (r.prenom || '').trim() || 'à toi';
   const dateTxt = so.date_texte || so.code;
   const m = (motif || '').trim() || cancelMotif(so);
   const person = { prenom: r.prenom, nom: r.nom, email: r.email, genre: r.genre, recherche: r.recherche, annee: r.annee };
-  let futs = [];
-  try { futs = eligibleFutureSoirees(person, so.id); } catch { futs = []; }
+  const futs = proposedSoirees(person, so, opts, true);
   const cartes = futs.map((f) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:12px 0"><tr><td style="border:1px solid #d0aa54;border-radius:10px;padding:14px 16px"><div style="font-weight:700;color:#156b54">${esc(f.date_texte || f.code)}</div>${f.lieu ? `<div style="color:#5b6b64;font-size:14px;margin-top:2px">${esc(f.lieu)}</div>` : ''}${f.tranche ? `<div style="color:#5b6b64;font-size:14px">Tranche d'âge : ${esc(f.tranche)} ans (souplesse de 3 ans)</div>` : ''}<div style="margin-top:10px"><a href="${soireeLink(f.code)}" style="display:inline-block;background:#156b54;color:#fff;text-decoration:none;padding:10px 20px;border-radius:24px;font-weight:700">Réserver ma place</a></div></td></tr></table>`).join('');
   const inner = `<p>Bonjour ${esc(prenom)},</p>`
     + `<p>La <b>Soirée Match du ${esc(dateTxt)}</b> n'aura malheureusement pas lieu. ${esc(m)}</p>`
@@ -1483,9 +1554,9 @@ function cancelSimpleMail(so, r, motif) {
     + `On espère vraiment t'y voir.\n\nL'équipe Soirée Match`;
   return { subject: `Soirée Match du ${dateTxt} annulée`, text, inner };
 }
-function mailCancel(so, r, motif) {
+function mailCancel(so, r, motif, opts) {
   if (!transporter) return;
-  const m = cancelSimpleMail(so, r, motif);
+  const m = cancelSimpleMail(so, r, motif, opts);
   transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: m.subject, text: m.text, html: emailShell(m.inner, unsubLink(r.email)) }).catch(() => {});
 }
 function waitlistPage(so) {
@@ -1493,15 +1564,32 @@ function waitlistPage(so) {
 }
 
 // ---------- Aperçu avant annulation ----------
-function cancelPreviewBody(so, motif, o) {
+// Lecture de la sélection de soirées (aperçu en GET / envoi en POST)
+function optsFromQuery(sp) {
+  if (!sp.get('propset')) return null;
+  return { codes: sp.getAll('prop'), force: !!sp.get('force') };
+}
+function optsFromForm(d) {
+  if (!d.propset) return null;
+  let c = d.prop || [];
+  if (!Array.isArray(c)) c = [c];
+  return { codes: c.map((x) => String(x)), force: !!d.force };
+}
+function cancelPreviewBody(so, motif, o, opts) {
   const m = (motif || '').trim() || cancelMotif(so);
+  const dispo = futureSoireesOpen(so.id);
+  const codes = opts && Array.isArray(opts.codes) ? opts.codes : dispo.map((f) => f.code);
+  const force = !!(opts && opts.force);
+  const cases = dispo.length
+    ? dispo.map((f) => `<label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-weight:400"><input type=checkbox name=prop value="${esc(f.code)}"${codes.includes(f.code) ? ' checked' : ''}> ${esc(f.date_texte || f.code)}${f.tranche ? ` — ${esc(f.tranche)} ans` : ''}${f.type ? ` · ${esc(f.type)}` : ''}</label>`).join('')
+    : '<p style="margin:6px 0 0;color:#7b8a83">Aucune autre soirée ouverte. Crée-la d\'abord dans « Soirées », puis reviens ici.</p>';
   const paid = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id);
   const autres = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status IN ('waiting','hold')").all(so.id);
   const sample = paid[0] || { id: 0, prenom: 'Julie', nom: '', email: 'exemple@soireematch.com' };
-  const mail = cancelChoiceMail(so, sample, m);
+  const mail = cancelChoiceMail(so, sample, m, { codes, force });
   const html = emailShell(mail.inner, unsubLink(sample.email || 'exemple@soireematch.com'));
   const sample2 = autres[0] || { id: 0, prenom: 'Paul', nom: '', email: 'exemple@soireematch.com', genre: 'Homme', recherche: 'Des femmes', annee: new Date().getFullYear() - 45 };
-  const mail2 = cancelSimpleMail(so, sample2, m);
+  const mail2 = cancelSimpleMail(so, sample2, m, { codes, force });
   const html2 = emailShell(mail2.inner, unsubLink(sample2.email || 'exemple@soireematch.com'));
   const liste = (arr) => arr.length
     ? '<ul style="margin:6px 0 0;padding-left:20px">' + arr.map((r) => `<li>${esc(((r.prenom || '') + ' ' + (r.nom || '')).trim())} — ${esc(r.email)}</li>`).join('') + '</ul>'
@@ -1522,6 +1610,11 @@ function cancelPreviewBody(so, motif, o) {
 
   <form method=post action="${o.action}" style="${box}" onsubmit="return confirm('Envoyer les e-mails et annuler définitivement la soirée ?')">
     ${o.hidden}
+    <input type=hidden name=propset value=1>
+    <label style="display:block;font-weight:700;margin-bottom:6px">Prochaines soirées à proposer dans l'e-mail</label>
+    ${cases}
+    <label style="display:flex;align-items:center;gap:8px;margin:10px 0 0;font-weight:400"><input type=checkbox name=force value=1${force ? ' checked' : ''}> Les proposer même aux personnes hors profil (âge, sexe, orientation)</label>
+    <p style="color:#5b6b64;font-size:14px;margin:6px 0 16px">Sans cette case, chacun ne voit que les dates qui lui correspondent. Elle n'agit que sur l'e-mail des <b>non-payés</b> : pour les personnes ayant payé, le report n'est possible que sur une soirée de leur profil.</p>
     <label style="display:block;font-weight:700;margin-bottom:6px">Raison de l'annulation — elle apparaît telle quelle dans l'e-mail</label>
     <textarea name=motif rows=3 style="width:100%;box-sizing:border-box;font:inherit;padding:8px;border:1px solid #c8d8d2;border-radius:8px">${esc(m)}</textarea>
     <p style="color:#5b6b64;font-size:14px;margin:8px 0 0">Modifie le texte puis clique « Rafraîchir l'aperçu » pour le relire dans l'e-mail. Le bouton rouge, lui, envoie pour de bon.</p>
@@ -1541,22 +1634,22 @@ function cancelPreviewBody(so, motif, o) {
     <iframe srcdoc="${esc(html2)}" style="width:100%;height:780px;border:1px solid #d7e6df;border-radius:8px;background:#fff"></iframe>
   </div>`;
 }
-function cancelPreviewPage(so, motif) {
+function cancelPreviewPage(so, motif, opts) {
   return `${pageHead('Annuler la soirée')}<div class=wrap>${cancelPreviewBody(so, motif, {
     action: '/admin/soirees/cancel',
     refresh: '/admin/soirees/cancel',
     hidden: `<input type=hidden name=id value=${so.id}>`,
     back: `/admin/soirees/reservations?id=${so.id}`,
-  })}</div></html>`;
+  }, opts)}</div></html>`;
 }
-function decisionCancelPage(so, t, motif) {
+function decisionCancelPage(so, t, motif, opts) {
   const q = `sid=${so.id}&t=${encodeURIComponent(t)}`;
   return `${siteHead('Annuler la soirée — Soirée Match')}<div class=box style="max-width:720px;text-align:left">${cancelPreviewBody(so, motif, {
     action: `/decision/cancel?${q}`,
     refresh: '/decision/cancel',
     hidden: `<input type=hidden name=sid value=${so.id}><input type=hidden name=t value="${esc(t)}">`,
     back: `/decision?${q}`,
-  })}</div></html>`;
+  }, opts)}</div></html>`;
 }
 function decisionPage(so, t) {
   const q = `sid=${so.id}&t=${encodeURIComponent(t)}`;
@@ -1744,9 +1837,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/decision/close' && req.method === 'POST') { await readBody(req); db.prepare('UPDATE soirees SET actif=0 WHERE id=?').run(so.id); return send(res, 200, pubMsg('Inscriptions fermées', 'Plus aucune nouvelle inscription pour cette soirée. Tu peux toujours en rouvrir une depuis l\'admin.')); }
     if (p === '/decision/cancel' && req.method === 'GET') {
       if (so.annulee) return send(res, 200, pubMsg('Déjà annulée', 'Cette soirée est déjà annulée.'));
-      return send(res, 200, decisionCancelPage(so, t, url.searchParams.get('motif') || ''));
+      return send(res, 200, decisionCancelPage(so, t, url.searchParams.get('motif') || '', optsFromQuery(url.searchParams)));
     }
-    if (p === '/decision/cancel' && req.method === 'POST') { const d = parseForm(await readBody(req)); if (!so.annulee) await cancelWithChoice(so, d.motif || ''); return send(res, 200, pubMsg('Soirée annulée', 'Chaque personne payée a reçu le choix : reporter ou être remboursée. 💛')); }
+    if (p === '/decision/cancel' && req.method === 'POST') { const d = parseForm(await readBody(req)); if (!so.annulee) await cancelWithChoice(so, d.motif || '', optsFromForm(d)); return send(res, 200, pubMsg('Soirée annulée', 'Chaque personne payée a reçu le choix : reporter ou être remboursée. 💛')); }
     return send(res, 404, 'Introuvable');
   }
 
@@ -1786,8 +1879,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST') {
       await readBody(req);
       const so = getSoireeById(r.soiree_id);
-      await refundResa(r, so || {}, 'annulation');
-      return send(res, 200, pubMsg('Remboursement lancé ✓', 'Ton remboursement est en cours — il réapparaîtra sur ton moyen de paiement d\'ici quelques jours. Merci de ta compréhension. 💛'));
+      const ok = await refundResa(r, so || {}, 'annulation');
+      mailAdminRefundRequest(so || {}, r, ok);
+      return ok
+        ? send(res, 200, pubMsg('Remboursement lancé ✓', 'Ton remboursement est en cours — il réapparaîtra sur ton moyen de paiement d\'ici quelques jours. Merci de ta compréhension. 💛'))
+        : send(res, 200, pubMsg('Demande bien reçue', 'Ta demande de remboursement est enregistrée. Un souci technique nous empêche de la traiter automatiquement : on s\'en occupe à la main et tu recevras une confirmation dès que c\'est fait. Merci de ta patience. 💛'));
     }
     return send(res, 200, rembourserPage(r, t));
   }
@@ -1994,13 +2090,13 @@ const server = http.createServer(async (req, res) => {
       const s = id && getSoireeById(id);
       if (!s) return send(res, 302, '', { Location: '/admin/soirees' });
       if (s.annulee) return send(res, 302, '', { Location: `/admin/soirees/reservations?id=${id}` });
-      return send(res, 200, cancelPreviewPage(s, url.searchParams.get('motif') || ''));
+      return send(res, 200, cancelPreviewPage(s, url.searchParams.get('motif') || '', optsFromQuery(url.searchParams)));
     }
     if (p === '/admin/soirees/cancel' && req.method === 'POST') {
       const d = parseForm(await readBody(req));
       const id = Number(d.id);
       const s = id && getSoireeById(id);
-      if (s && !s.annulee) await cancelWithChoice(s, d.motif || '');
+      if (s && !s.annulee) await cancelWithChoice(s, d.motif || '', optsFromForm(d));
       return send(res, 302, '', { Location: id ? `/admin/soirees/reservations?id=${id}&done=1` : '/admin/soirees' });
     }
     if (p === '/admin/soirees/confirm' && req.method === 'POST') {
