@@ -228,7 +228,11 @@ try { db.exec('ALTER TABLE reservations ADD COLUMN stripe_session TEXT'); } catc
 try { db.exec('ALTER TABLE reservations ADD COLUMN amount INTEGER'); } catch { /* déjà là */ }
 // Parité / liste d'attente (Option A)
 try { db.exec('ALTER TABLE soirees ADD COLUMN cap_sexe INTEGER DEFAULT 15'); } catch { /* déjà là */ }
-try { db.exec('ALTER TABLE soirees ADD COLUMN min_sexe INTEGER DEFAULT 8'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE soirees ADD COLUMN min_sexe INTEGER DEFAULT 6'); } catch { /* déjà là */ }
+// Minimum abaissé à 6 par sexe (12 personnes) — décision de Marc, 20 sept 2026.
+// L'ALTER échoue au deuxième démarrage : la mise à jour ne s'applique donc qu'une seule fois,
+// et une valeur réglée à la main plus tard n'est jamais écrasée.
+try { db.exec('ALTER TABLE soirees ADD COLUMN min6_done INTEGER DEFAULT 1'); db.exec('UPDATE soirees SET min_sexe=6 WHERE min_sexe=8'); } catch { /* déjà fait */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN cap_total INTEGER DEFAULT 30'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN min_total INTEGER DEFAULT 10'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN date_start TEXT'); } catch { /* déjà là */ }
@@ -237,6 +241,10 @@ try { db.exec('ALTER TABLE soirees ADD COLUMN alert72_sent INTEGER DEFAULT 0'); 
 try { db.exec('ALTER TABLE soirees ADD COLUMN reconcile_done INTEGER DEFAULT 0'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN saturday_sent INTEGER DEFAULT 0'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN confirm_sent INTEGER DEFAULT 0'); } catch { /* déjà là */ }
+// Mode de paiement : 'inscription' (on paie en réservant) ou 'differe' (gratuit, on paie après
+// la confirmation du samedi). Les soirées existantes passent en différé — choix de Marc, 20 sept 2026.
+try { db.exec('ALTER TABLE soirees ADD COLUMN paiement TEXT'); } catch { /* déjà là */ }
+try { db.exec("UPDATE soirees SET paiement='differe' WHERE paiement IS NULL OR paiement=''"); } catch { /* rien */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN status TEXT'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN hold_expires TEXT'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN priority INTEGER DEFAULT 0'); } catch { /* déjà là */ }
@@ -333,9 +341,11 @@ async function startReservation(res, so, person) {
   if (db.prepare("SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND status='paid'").get(so.id, email))
     return send(res, 200, pubMsg('Déjà réservé', 'Ta place pour cette soirée est déjà confirmée. À très vite ! 💛'));
   // un hold en cours ? -> on reprend le paiement
-  const hold = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND status='hold' AND hold_expires>?").get(so.id, email, nowIso());
+  const hold = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND status='hold' AND (hold_expires IS NULL OR hold_expires>?)").get(so.id, email, nowIso());
   if (hold) {
     if (!PAY_ON) { markPaidAndConfirm(hold); return send(res, 200, soireeOkPage(so)); }
+    // hold_expires vide = inscription gratuite en attente de la confirmation du samedi
+    if (!hold.hold_expires) return send(res, 200, inscritOkPage(so));
     try { return send(res, 302, '', { Location: await createCheckout(hold.id, so, email) }); }
     catch (e) { return send(res, 200, pubMsg('Paiement momentanément indisponible', 'Réessaie dans un instant.')); }
   }
@@ -357,6 +367,15 @@ async function startReservation(res, so, person) {
     sendReservationMail(so, person);
     promote(so);
     return send(res, 200, soireeOkPage(so));
+  }
+  // Paiement différé : l'inscription est gratuite. La place est tenue sans échéance
+  // jusqu'à la confirmation du samedi, qui envoie le lien de paiement.
+  if (isDeferred(so)) {
+    db.prepare("INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,status,hold_expires,priority,paid) VALUES(?,?,?,?,?,?,?,?,?,'hold',NULL,0,0)")
+      .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, genre, person.recherche, nowIso());
+    sendInscriptionMail(so, person);
+    promote(so);   // cette inscription peut débloquer une place pour le sexe opposé
+    return send(res, 200, inscritOkPage(so));
   }
   // Stripe : on crée un hold (3h) puis on lance le paiement
   const info = db.prepare("INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,status,hold_expires,priority,paid) VALUES(?,?,?,?,?,?,?,?,?,'hold',?,0,0)")
@@ -426,6 +445,17 @@ function sendReservationMail(so, i) {
     text: `Bonjour ${prenom},\n\nTa place pour la Soirée Match${quand} est bien réservée !\n${so.lieu ? `\nLieu : ${so.lieu}` : ''}${so.prix ? `\nEntrée : ${so.prix}` : ''}\n\nUn petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !\n\nOn a hâte de te voir. À très vite !\nTa team Soirée Match`,
   }).catch((e) => console.error('Mail réservation échoué:', e.message));
   if (NOTIFY_TO) transporter.sendMail({ from: MAIL_FROM, to: NOTIFY_TO, subject: `Réservation « ${so.code} » : ${i.prenom || ''} ${i.nom || ''}`, text: `Nouvelle réservation pour ${so.code} (${so.date_texte || ''})\n${i.prenom || ''} ${i.nom || ''} — ${i.email || ''}` }).catch(() => {});
+}
+// Inscription gratuite (paiement différé) : rien n'est débité tant que la soirée n'est pas confirmée.
+function sendInscriptionMail(so, i) {
+  if (!transporter) return;
+  const prenom = (i.prenom || '').trim() || 'à toi';
+  const quand = so.date_texte ? ` du ${so.date_texte}` : '';
+  const sujet = `Ton inscription à la Soirée Match${so.date_texte ? ` — ${so.date_texte}` : ''} est enregistrée`;
+  const txt = `Bonjour ${prenom},\n\nTon inscription à la Soirée Match${quand} est enregistrée. Rien n'est débité pour l'instant.${so.lieu ? `\n\nLieu : ${so.lieu}` : ''}${so.prix ? `\nEntrée : ${so.prix}` : ''}\n\nComment ça se passe : nous confirmons la soirée le samedi qui précède, quand nous savons si le groupe est complet et équilibré. Tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras jusqu'au lundi soir pour le faire. Si la soirée n'a pas lieu, tu n'auras rien payé.\n\nUn petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !\n\nOn a hâte de te voir. À très vite !\nTa team Soirée Match`;
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Ton inscription à la <b>Soirée Match${esc(quand)}</b> est enregistrée. <b>Rien n'est débité pour l'instant.</b></p>${so.lieu ? `<p>Lieu : ${esc(so.lieu)}${so.prix ? `<br>Entrée : ${esc(so.prix)}` : ''}</p>` : (so.prix ? `<p>Entrée : ${esc(so.prix)}</p>` : '')}<p>Comment ça se passe : nous confirmons la soirée <b>le samedi qui précède</b>, quand nous savons si le groupe est complet et équilibré. Tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras <b>jusqu'au lundi soir</b> pour le faire. Si la soirée n'a pas lieu, tu n'auras rien payé.</p><p>Un petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !</p><p>On a hâte de te voir. À très vite !<br>Ta team Soirée Match</p>`;
+  transporter.sendMail({ from: MAIL_FROM, to: i.email, subject: sujet, text: txt, html: emailShell(inner, unsubLink(i.email)) }).catch((e) => console.error('Mail inscription échoué:', e.message));
+  if (NOTIFY_TO) transporter.sendMail({ from: MAIL_FROM, to: NOTIFY_TO, subject: `Inscription « ${so.code} » : ${i.prenom || ''} ${i.nom || ''}`, text: `Nouvelle inscription (gratuite, paiement différé) pour ${so.code} (${so.date_texte || ''})\n${i.prenom || ''} ${i.nom || ''} — ${i.email || ''}` }).catch(() => {});
 }
 function resaCSV(rows) {
   const cols = ['id', 'created_at', 'prenom', 'nom', 'email', 'tel', 'annee', 'genre', 'recherche'];
@@ -776,6 +806,9 @@ function soireePage(so, err) {
     </form>
   </div></html>`;
 }
+function inscritOkPage(so) {
+  return `${siteHead('Inscription enregistrée')}<div class=box><h1>C'est noté ✓</h1><p>Ton inscription à la Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''} est enregistrée. <b>Rien n'est débité pour l'instant.</b></p><p>Nous confirmons la soirée le samedi qui précède, quand nous savons si le groupe est complet et équilibré. Tu recevras alors un e-mail avec un lien pour régler ta place${so.prix ? ` (${esc(so.prix)})` : ''}. Si la soirée n'a pas lieu, tu n'auras rien payé.</p><p>Tu reçois tout de suite un e-mail qui récapitule tout ça. À très vite&nbsp;! 💛</p></div></html>`;
+}
 function soireeOkPage(so) {
   return `${siteHead('Réservation confirmée')}<div class=box><h1>C'est réservé ✓</h1><p>Ta place pour la Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''} est bien enregistrée. Tu vas recevoir un e-mail de confirmation. On a hâte de te voir&nbsp;! 💛</p></div></html>`;
 }
@@ -849,10 +882,13 @@ function soireesPage() {
       <input type="datetime-local" name="date_start" style="width:100%">
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
         <span style="flex:1;min-width:110px"><label>Places / sexe</label><input name=cap_sexe type=number value=15 style="width:100%"></span>
-        <span style="flex:1;min-width:110px"><label>Min / sexe</label><input name=min_sexe type=number value=8 style="width:100%"></span>
+        <span style="flex:1;min-width:110px"><label>Min / sexe</label><input name=min_sexe type=number value=6 style="width:100%"></span>
         <span style="flex:1;min-width:110px"><label>Capacité (gay)</label><input name=cap_total type=number value=30 style="width:100%"></span>
       </div>
       <p class=hint>Hétéro : parité stricte, min/sexe puis max/sexe. Gay : capacité totale, sans parité.</p>
+      <label>Paiement</label>
+      <select name=paiement style="width:100%"><option value="differe">Différé — inscription gratuite, on paie après la confirmation du samedi</option><option value="inscription">À l'inscription — on paie en réservant sa place</option></select>
+      <p class=hint>En différé, l'inscrit ne paie rien tant que la soirée n'est pas confirmée. Le lien de paiement part avec le « Confirmer &amp; prévenir » du samedi, échéance le lundi 20h.</p>
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif checked style="width:auto"> Active (réservations ouvertes)</label>
       <div style="margin-top:14px"><button>Créer la soirée</button></div>
     </form>
@@ -879,6 +915,9 @@ function soireeEditPage(s) {
         <span style="flex:1;min-width:110px"><label>Min / sexe</label><input name=min_sexe type=number value="${minSexe(s)}" style="width:100%"></span>
         <span style="flex:1;min-width:110px"><label>Capacité (gay)</label><input name=cap_total type=number value="${capTotal(s)}" style="width:100%"></span>
       </div>
+      <label>Paiement</label>
+      <select name=paiement style="width:100%"><option value="differe"${payMode(s) === 'differe' ? ' selected' : ''}>Différé — inscription gratuite, on paie après la confirmation du samedi</option><option value="inscription"${payMode(s) === 'inscription' ? ' selected' : ''}>À l'inscription — on paie en réservant sa place</option></select>
+      <p class=hint>Modifiable à tout moment. Si tu repasses en « à l'inscription », les personnes déjà inscrites gratuitement le restent et recevront leur lien de paiement le samedi ; seuls les inscrits suivants paieront tout de suite.</p>
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif ${s.actif ? 'checked' : ''} style="width:auto"> Active</label>
       <div style="margin-top:14px"><button>Enregistrer</button> <a href="/admin/soirees"><button type=button class=sec>Annuler</button></a></div>
     </form>
@@ -894,7 +933,11 @@ function reservationsPage(s, done) {
   const cnt = (st, g) => list.filter((r) => r.status === st && (!g || r.genre === g)).length;
   const par = isParity(s);
   const lbl = { paid: '✅ payé', hold: '⏳ à confirmer (3h)', waiting: "🕒 liste d'attente", refunded: '↩ remboursé', expired: '✕ expiré', cancelled: '✕ annulé' };
-  const rows = list.map((r, i) => `<tr><td>${i + 1}</td><td>${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.genre)}</td><td>${lbl[r.status] || esc(r.status || '')}${r.refund_error ? `<div style="color:#c0392b;font-size:12px;font-weight:700" title="${esc(r.refund_error)}">⚠ remboursement échoué</div>` : ''}</td><td>${r.status === 'waiting' ? `<form method=post action=/admin/soirees/resa/allow style="margin:0 0 4px" onsubmit="return confirm('Autoriser ${esc(r.prenom || '')} à payer, hors parité ? (peut déséquilibrer la soirée)')"><input type=hidden name=id value=${r.id}><button style="padding:4px 10px;font-size:12px;background:#156b54;color:#fff">Autoriser à payer</button></form>` : ''}${['paid', 'hold', 'waiting'].includes(r.status) ? `<form method=post action=/admin/soirees/resa/remove style="margin:0" onsubmit="return confirm('Retirer ${esc((r.prenom || '') + ' ' + (r.nom || ''))} ?${r.status === 'paid' ? ' Cette personne sera remboursée.' : ''}')"><input type=hidden name=id value=${r.id}><button class=danger style="padding:4px 10px;font-size:12px">Retirer</button></form>` : ''}</td></tr>`).join('');
+  // En paiement différé, un « hold » sans échéance est une inscription gratuite en attente du samedi.
+  const lblOf = (r) => (r.status === 'hold'
+    ? (r.hold_expires ? `⏳ à régler avant le ${echeanceTxt(r.hold_expires)}` : '📝 inscrit — pas encore payé')
+    : (lbl[r.status] || esc(r.status || '')));
+  const rows = list.map((r, i) => `<tr><td>${i + 1}</td><td>${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td><td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a></td><td>${esc(r.genre)}</td><td>${lblOf(r)}${r.refund_error ? `<div style="color:#c0392b;font-size:12px;font-weight:700" title="${esc(r.refund_error)}">⚠ remboursement échoué</div>` : ''}</td><td>${r.status === 'waiting' ? `<form method=post action=/admin/soirees/resa/allow style="margin:0 0 4px" onsubmit="return confirm('Autoriser ${esc(r.prenom || '')} à payer, hors parité ? (peut déséquilibrer la soirée)')"><input type=hidden name=id value=${r.id}><button style="padding:4px 10px;font-size:12px;background:#156b54;color:#fff">Autoriser à payer</button></form>` : ''}${['paid', 'hold', 'waiting'].includes(r.status) ? `<form method=post action=/admin/soirees/resa/remove style="margin:0" onsubmit="return confirm('Retirer ${esc((r.prenom || '') + ' ' + (r.nom || ''))} ?${r.status === 'paid' ? ' Cette personne sera remboursée.' : ''}')"><input type=hidden name=id value=${r.id}><button class=danger style="padding:4px 10px;font-size:12px">Retirer</button></form>` : ''}</td></tr>`).join('');
   const viable = isViable(s);
   const capLine = par
     ? `Parité stricte — <b>${cnt('paid', 'Femme')}</b> F / <b>${cnt('paid', 'Homme')}</b> H payés · min ${minSexe(s)}/sexe · max ${capSexe(s)}/sexe · ${viable ? '<span style="color:#1c7a3f">✔ viable</span>' : `<span style="color:#c0392b">✘ sous le minimum (manque ${esc(deficitTxt(s))})</span>`}`
@@ -1220,7 +1263,7 @@ function emailShell(inner, unsub) {
 const isParity = (so) => (so.type === 'Hétéro');
 const otherGenre = (g) => (g === 'Femme' ? 'Homme' : 'Femme');
 const capSexe = (so) => (Number(so.cap_sexe) > 0 ? Number(so.cap_sexe) : 15);
-const minSexe = (so) => (Number(so.min_sexe) > 0 ? Number(so.min_sexe) : 8);
+const minSexe = (so) => (Number(so.min_sexe) > 0 ? Number(so.min_sexe) : 6);
 const capTotal = (so) => (Number(so.cap_total) > 0 ? Number(so.cap_total) : 30);
 const minTotal = (so) => (Number(so.min_total) > 0 ? Number(so.min_total) : 10);
 const LEAD_MAX = 3;   // parité : un sexe peut mener de 3 au maximum, ensuite liste d'attente
@@ -1230,38 +1273,45 @@ function paidCount(soId, genre) {
     ? db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='paid' AND genre=?").get(soId, genre).n
     : db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='paid'").get(soId).n;
 }
+// Un hold sans échéance est une inscription gratuite (paiement différé) : elle occupe bien une place.
 function holdCount(soId, genre) {
   const iso = nowIso();
   return genre
-    ? db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='hold' AND hold_expires>? AND genre=?").get(soId, iso, genre).n
-    : db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='hold' AND hold_expires>?").get(soId, iso).n;
+    ? db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='hold' AND (hold_expires IS NULL OR hold_expires>?) AND genre=?").get(soId, iso, genre).n
+    : db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status='hold' AND (hold_expires IS NULL OR hold_expires>?)").get(soId, iso).n;
 }
 // Une place est-elle ouverte au paiement maintenant pour ce profil ?
 // Hétéro : on n'autorise (payé+hold) d'un sexe que jusqu'au nombre de PAYÉS de l'autre sexe
 // -> garantit |payésF - payésH| <= 1 en permanence. Gay : simple capacité totale.
+// Effectif qui compte pour la parité, la viabilité et les décisions.
+// Paiement à l'inscription : seuls les payés comptent (un hold de 3h peut s'évaporer).
+// Paiement différé : personne n'a payé avant le lundi, on compte donc les inscrits.
+function engagedCount(so, genre) {
+  return isDeferred(so) ? paidCount(so.id, genre) + holdCount(so.id, genre) : paidCount(so.id, genre);
+}
 function slotOpen(so, genre) {
   if (isParity(so)) {
     const held = paidCount(so.id, genre) + holdCount(so.id, genre);
-    return held < capSexe(so) && (held - paidCount(so.id, otherGenre(genre))) < LEAD_MAX;
+    return held < capSexe(so) && (held - engagedCount(so, otherGenre(genre))) < LEAD_MAX;
   }
   const heldT = paidCount(so.id, null) + holdCount(so.id, null);
   return heldT < capTotal(so);
 }
 function isViable(so) {
   return isParity(so)
-    ? (paidCount(so.id, 'Femme') >= minSexe(so) && paidCount(so.id, 'Homme') >= minSexe(so))
-    : (paidCount(so.id, null) >= minTotal(so));
+    ? (engagedCount(so, 'Femme') >= minSexe(so) && engagedCount(so, 'Homme') >= minSexe(so))
+    : (engagedCount(so, null) >= minTotal(so));
 }
 function deficitTxt(so) {
   if (isParity(so)) {
-    const mf = Math.max(0, minSexe(so) - paidCount(so.id, 'Femme'));
-    const mh = Math.max(0, minSexe(so) - paidCount(so.id, 'Homme'));
+    const mf = Math.max(0, minSexe(so) - engagedCount(so, 'Femme'));
+    const mh = Math.max(0, minSexe(so) - engagedCount(so, 'Homme'));
     const parts = [];
     if (mf) parts.push(mf + ' ' + (mf > 1 ? 'femmes' : 'femme'));
     if (mh) parts.push(mh + ' ' + (mh > 1 ? 'hommes' : 'homme'));
     return parts.join(' et ') || 'quelques personnes';
   }
-  const m = Math.max(0, minTotal(so) - paidCount(so.id, null));
+  const m = Math.max(0, minTotal(so) - engagedCount(so, null));
   return m ? (m + ' ' + (m > 1 ? 'personnes' : 'personne')) : 'quelques personnes';
 }
 
@@ -1281,7 +1331,10 @@ function promote(soIn) {
         + ' ORDER BY priority DESC, created_at ASC LIMIT 1'
       ).get(...(g ? [so.id, g] : [so.id]));
       if (!w) break;
-      if (PAY_ON) {
+      if (isDeferred(so)) {
+        db.prepare("UPDATE reservations SET status='hold', hold_expires=NULL WHERE id=?").run(w.id);
+        mailSlotOpenFree(so, w);
+      } else if (PAY_ON) {
         db.prepare("UPDATE reservations SET status='hold', hold_expires=? WHERE id=?").run(new Date(nowMs() + HOLD_MS).toISOString(), w.id);
         mailSlotOpen(so, w);
       } else {
@@ -1292,13 +1345,21 @@ function promote(soIn) {
   }
 }
 function expireHolds(so) {
+  const doomed = isDeferred(so)
+    ? db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='hold' AND hold_expires<=?").all(so.id, nowIso())
+    : [];
   const info = db.prepare("UPDATE reservations SET status='expired' WHERE soiree_id=? AND status='hold' AND hold_expires<=?").run(so.id, nowIso());
+  if (doomed.length && adminMail() && transporter) {
+    transporter.sendMail({ from: MAIL_FROM, to: adminMail(),
+      subject: `Soirée ${so.code} — ${doomed.length} place(s) non payée(s) libérée(s)`,
+      text: `L'échéance de paiement est passée pour la soirée ${so.code} (${so.date_texte || ''}).\n\nPlaces libérées :\n${doomed.map((r) => `• ${(r.prenom || '').trim()} ${(r.nom || '').trim()} — ${r.email} (${r.genre || '?'})`).join('\n')}\n\nElles sont proposées aux personnes en liste d'attente. Si le compte n'y est plus, pense à annuler la soirée depuis l'admin.` }).catch(() => {});
+  }
   return info.changes;
 }
 // Rend true si le remboursement est bien passé chez Stripe (ou s'il n'y avait rien à rembourser).
 // En cas d'échec : la réservation reste « payée », aucun e-mail de remboursement n'est envoyé au client,
 // et Marc reçoit une alerte pour traiter le cas à la main dans Stripe.
-async function refundResa(resa, so, reason) {
+async function refundResa(resa, so, reason, o) {
   if (PAY_ON && resa.stripe_payment_intent) {
     try {
       await stripeApi('POST', '/v1/refunds', { payment_intent: resa.stripe_payment_intent });
@@ -1311,7 +1372,7 @@ async function refundResa(resa, so, reason) {
     }
   }
   db.prepare("UPDATE reservations SET status='refunded', paid=0, refund_error=NULL WHERE id=?").run(resa.id);
-  mailRefund(so, resa, reason);
+  if (!(o && o.silent)) mailRefund(so, resa, reason);
   return true;
 }
 // Alerte à Marc : remboursement Stripe en échec — à traiter à la main
@@ -1374,13 +1435,14 @@ const adminMail = () => NOTIFY_TO || (/@/.test(ADMIN_USER) ? ADMIN_USER : '');
 
 function mailDecision(so) {
   const to = adminMail(); if (!to || !transporter) return;
-  const f = paidCount(so.id, 'Femme'), h = paidCount(so.id, 'Homme');
+  const f = engagedCount(so, 'Femme'), h = engagedCount(so, 'Homme');
+  const mot = isDeferred(so) ? 'Inscrits' : 'Inscrits payés';
   const link = `${SITE_URL}/decision?sid=${so.id}&t=${admTok(so.id)}`;
   transporter.sendMail({ from: MAIL_FROM, to,
     subject: `Décision soirée ${so.date_texte || so.code} — maintenir, annuler ou fermer ?`,
     text: `C'est le moment de décider pour la Soirée Match du ${so.date_texte || so.code}.
 
-Inscrits payés : ${isParity(so) ? `${f} femmes / ${h} hommes (min ${minSexe(so)}/sexe)` : `${paidCount(so.id, null)} (min ${minTotal(so)})`}.
+${mot} : ${isParity(so) ? `${f} femmes / ${h} hommes (min ${minSexe(so)}/sexe)` : `${engagedCount(so, null)} (min ${minTotal(so)})`}.${isDeferred(so) ? `\nPaiement différé : en confirmant, chacun reçoit son lien de paiement (échéance ${echeanceTxt(new Date(payDeadlineMs(so)).toISOString())}).` : ''}
 ${isViable(so) ? '✅ Effectif suffisant.' : '⚠ Sous le minimum — il manque ' + deficitTxt(so) + '.'}
 
 Décide ici (confirmer / fermer les inscriptions / annuler) :
@@ -1396,8 +1458,8 @@ function mailSoireeConfirmee(so, i) {
 }
 function cancelMotif(so) {
   if (isParity(so)) {
-    const mf = Math.max(0, minSexe(so) - paidCount(so.id, 'Femme'));
-    const mh = Math.max(0, minSexe(so) - paidCount(so.id, 'Homme'));
+    const mf = Math.max(0, minSexe(so) - engagedCount(so, 'Femme'));
+    const mh = Math.max(0, minSexe(so) - engagedCount(so, 'Homme'));
     if (mh > mf) return "Nous sommes obligés d'annuler car nous n'avons pas assez d'inscriptions du côté des hommes.";
     if (mf > mh) return "Nous sommes obligés d'annuler car nous n'avons pas assez d'inscriptions du côté des femmes.";
   }
@@ -1477,8 +1539,64 @@ function logMails(tplName, subject, sampleText, recips, so) {
         recips.map((r) => r.email).join(', '), [...new Set(recips.map((r) => r.genre).filter(Boolean))].join(', '));
   } catch (e) { console.error('Journal e-mails', e.message); }
 }
+// ---------- Modèle B : annulation sans date de remplacement ----------
+// Une seule lettre : l'annulation ET le remboursement (pour ceux qui ont payé).
+function cancelNoDateMail(so, r, motif, paid) {
+  const prenom = (r.prenom || '').trim() || 'à toi';
+  const dateTxt = so.date_texte || so.code;
+  const m = (motif || '').trim() || cancelMotif(so);
+  const argent = paid
+    ? `<p>Ta place est <b>intégralement remboursée</b> : le montant réapparaîtra sur ton moyen de paiement d'ici quelques jours, le délai dépend de ta banque. Tu n'as rien à faire.</p>`
+    : `<p>Tu n'avais pas encore réglé ta place : <b>rien n'a été débité</b> et tu n'as rien à faire.</p>`;
+  const argentTxt = paid
+    ? "Ta place est intégralement remboursée : le montant réapparaîtra sur ton moyen de paiement d'ici quelques jours, le délai dépend de ta banque. Tu n'as rien à faire."
+    : "Tu n'avais pas encore réglé ta place : rien n'a été débité et tu n'as rien à faire.";
+  const suite = "Nous n'avons pas de nouvelle date à te proposer pour l'instant dans ta tranche d'âge. Dès qu'une s'ouvre, tu seras averti(e) par e-mail — tu restes inscrit(e).";
+  const inner = `<p>Bonjour ${esc(prenom)},</p>`
+    + `<p>La <b>Soirée Match du ${esc(dateTxt)}</b> n'aura malheureusement pas lieu. ${esc(m)}</p>`
+    + argent
+    + `<p>${esc(suite)}</p>`
+    + `<p>Nous sommes désolés de ce contretemps.</p><p>L'équipe Soirée Match</p>`;
+  const text = `Bonjour ${prenom},\n\nLa Soirée Match du ${dateTxt} n'aura malheureusement pas lieu. ${m}\n\n${argentTxt}\n\n${suite}\n\nNous sommes désolés de ce contretemps.\n\nL'équipe Soirée Match`;
+  const subject = paid ? `Soirée Match du ${dateTxt} annulée — tu es remboursé(e)` : `Soirée Match du ${dateTxt} annulée`;
+  return { subject, text, inner };
+}
+function mailCancelNoDate(so, r, motif, paid) {
+  if (!transporter) return;
+  const m = cancelNoDateMail(so, r, motif, paid);
+  transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: m.subject, text: m.text, html: emailShell(m.inner, unsubLink(r.email)) }).catch(() => {});
+}
+// Annulation sans date : remboursement automatique de tous les payés, puis un seul e-mail.
+// Si le remboursement Stripe échoue, la personne reste « payée », ne reçoit rien, et Marc est alerté
+// par mailAdminRefundFailed — on ne lui écrit jamais qu'elle est remboursée si elle ne l'est pas.
+async function cancelNoDate(so, m) {
+  db.prepare('UPDATE soirees SET actif=0, annulee=1 WHERE id=?').run(so.id);
+  const payes = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id);
+  const remb = [];
+  for (const r of payes) {
+    if (await refundResa(r, so, 'annulation', { silent: true })) { mailCancelNoDate(so, r, m, true); remb.push(r); }
+  }
+  if (remb.length) {
+    const ex = cancelNoDateMail(so, remb[0], m, true);
+    logMails('Annulation sans date — remboursement', ex.subject, ex.text, remb, so);
+  }
+  const autres = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status IN ('waiting','hold')").all(so.id);
+  for (const r of autres) {
+    db.prepare("UPDATE reservations SET status='cancelled' WHERE id=?").run(r.id);
+    mailCancelNoDate(so, r, m, false);
+  }
+  if (autres.length) {
+    const ex = cancelNoDateMail(so, autres[0], m, false);
+    logMails('Annulation sans date — sans paiement', ex.subject, ex.text, autres, so);
+  }
+  const rates = payes.length - remb.length;
+  if (adminMail() && transporter) transporter.sendMail({ from: MAIL_FROM, to: adminMail(),
+    subject: `Soirée ${so.code} annulée — sans date de remplacement`,
+    text: `La soirée ${so.code} (${so.date_texte || ''}) est annulée.\n${remb.length} personne(s) remboursée(s) automatiquement.\n${autres.length} personne(s) sans paiement prévenue(s).${rates ? `\n\n⚠ ${rates} remboursement(s) Stripe en ÉCHEC — à traiter à la main dans Stripe.` : ''}` }).catch(() => {});
+}
 async function cancelWithChoice(so, motif, opts) {
   const m = (motif || '').trim() || cancelMotif(so);
+  if (opts && opts.modele === 'sansdate') return cancelNoDate(so, m);
   db.prepare('UPDATE soirees SET actif=0, annulee=1 WHERE id=?').run(so.id);
   const payes = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id);
   for (const r of payes) mailCancelChoice(so, r, m, opts);
@@ -1500,6 +1618,22 @@ async function cancelWithChoice(so, motif, opts) {
 function confirmSoiree(so) {
   const payes = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id);
   for (const r of payes) mailSoireeConfirmee(so, r);
+  if (isDeferred(so)) {
+    const dl = payDeadlineMs(so);
+    const dlIso = new Date(Number.isFinite(dl) ? dl : nowMs() + 36 * 3600000).toISOString();
+    const libres = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='hold'").all(so.id);
+    for (const r of libres) {
+      db.prepare('UPDATE reservations SET hold_expires=? WHERE id=?').run(dlIso, r.id);
+      mailPayNow(so, r, dlIso);
+    }
+    if (libres.length) {
+      const ex = payNowMail(so, libres[0], dlIso);
+      logMails('Soirée confirmée — lien de paiement (différé)', ex.subject, ex.text, libres, so);
+    }
+    if (adminMail() && transporter) transporter.sendMail({ from: MAIL_FROM, to: adminMail(),
+      subject: `Soirée ${so.code} confirmée — ${libres.length} lien(s) de paiement envoyé(s)`,
+      text: `Soirée ${so.code} (${so.date_texte || ''}) confirmée.\n${payes.length} personne(s) avaient déjà payé.\n${libres.length} personne(s) ont reçu leur lien de paiement, échéance ${echeanceTxt(dlIso)}.` }).catch(() => {});
+  }
   if (payes.length) logMails('Soirée confirmée — participants prévenus', `C'est confirmé : Soirée Match du ${so.date_texte || so.code}`,
     `Bonjour ${(payes[0].prenom || '').trim()},\n\nBonne nouvelle : la Soirée Match du ${so.date_texte || so.code} est confirmée, elle a bien lieu !${so.lieu ? `\nLieu : ${so.lieu}` : ''}\n\nOn se réjouit de te voir. À très vite,\nL'équipe Soirée Match`, payes, so);
   db.prepare('UPDATE soirees SET confirm_sent=1 WHERE id=?').run(so.id);
@@ -1507,8 +1641,8 @@ function confirmSoiree(so) {
 function alert72(so) {
   if (!NOTIFY_TO || !transporter) return;
   const detail = isParity(so)
-    ? `Femmes payées : ${paidCount(so.id, 'Femme')}/${minSexe(so)} · Hommes payés : ${paidCount(so.id, 'Homme')}/${minSexe(so)}`
-    : `Payés : ${paidCount(so.id, null)}/${minTotal(so)}`;
+    ? `Femmes : ${engagedCount(so, 'Femme')}/${minSexe(so)} · Hommes : ${engagedCount(so, 'Homme')}/${minSexe(so)}`
+    : `Inscrits : ${engagedCount(so, null)}/${minTotal(so)}`;
   transporter.sendMail({ from: MAIL_FROM, to: NOTIFY_TO,
     subject: `⚠ Soirée ${so.code} sous l'effectif minimum (J-72h)`,
     text: `La soirée ${so.code} (${so.date_texte || ''}) est sous le minimum à 72h.\n${detail}\nIl manque ${deficitTxt(so)}.\n\nEnvoie l'e-mail de relance « il manque X » depuis l'admin (modèle « Relance — il manque des inscrits » déjà prêt). Sans effectif suffisant à 24h, elle sera auto-annulée et tout le monde remboursé.` }).catch(() => {});
@@ -1519,6 +1653,27 @@ function decisionSaturdayMs(so) {
   const d = new Date(st);
   let off = ((d.getUTCDay() - 6) + 7) % 7; if (off === 0) off = 7;   // 6 = samedi
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - off, 9, 0, 0);   // samedi 09h
+}
+const payMode = (so) => (so && so.paiement === 'inscription' ? 'inscription' : 'differe');
+// Paiement différé actif : seulement quand Stripe est branché (sinon tout est gratuit de toute façon).
+const isDeferred = (so) => PAY_ON && payMode(so) === 'differe';
+// Échéance de paiement : le lundi qui précède la soirée, 20h.
+// Si ce lundi tombe avant le samedi de décision (soirée en début de semaine), on prend 24h avant.
+function payDeadlineMs(so) {
+  const st = eventStartMs(so); if (!Number.isFinite(st)) return NaN;
+  const d = new Date(st);
+  let off = ((d.getUTCDay() - 1) + 7) % 7; if (off === 0) off = 7;   // 1 = lundi, strictement avant
+  let dl = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - off, 20, 0, 0);
+  const sat = decisionSaturdayMs(so);
+  if (Number.isFinite(sat) && dl <= sat) dl = st - 24 * 3600000;
+  return Math.min(dl, st - 2 * 3600000);
+}
+const JOURS_FR = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+const MOIS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+function echeanceTxt(iso) {
+  const d = new Date(iso); if (isNaN(d.getTime())) return '';
+  const mn = d.getUTCMinutes();
+  return `${JOURS_FR[d.getUTCDay()]} ${d.getUTCDate()} ${MOIS_FR[d.getUTCMonth()]} à ${d.getUTCHours()}h${mn ? String(mn).padStart(2, '0') : ''}`;
 }
 function eligibleFutureSoirees(person, excludeId) {
   const now = nowMs();
@@ -1536,7 +1691,7 @@ async function tick() {
       const sat = decisionSaturdayMs(so);
       if (Number.isFinite(sat) && now >= sat && start > now && !so.saturday_sent) { mailDecision(so); db.prepare('UPDATE soirees SET saturday_sent=1 WHERE id=?').run(so.id); }
       const hrs = (start - now) / 3600000;
-      if (hrs <= 3 && !so.reconcile_done) { expireHolds(so); await reconcile(so); db.prepare('UPDATE soirees SET reconcile_done=1 WHERE id=?').run(so.id); }
+      if (hrs <= 3 && !so.reconcile_done) { expireHolds(so); if (!isDeferred(so)) await reconcile(so); db.prepare('UPDATE soirees SET reconcile_done=1 WHERE id=?').run(so.id); }
     } catch (e) { console.error('tick', so.code, e.message); }
   }
 }
@@ -1548,7 +1703,7 @@ function mailWaitlist(so, i) {
   const prenom = (i.prenom || '').trim() || 'à toi';
   transporter.sendMail({ from: MAIL_FROM, to: i.email,
     subject: `Tu es sur la liste d'attente — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''}`,
-    text: `Bonjour ${prenom},\n\nMerci de ton intérêt pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nPour garantir une parité parfaite hommes/femmes, les places de ton profil sont complètes pour le moment. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.\n\nDès qu'une place se libère pour toi, tu reçois un e-mail avec un lien pour la confirmer — tu auras alors 3 heures pour la régler avant qu'elle ne passe à la personne suivante. Rien n'est débité tant que ta place n'est pas garantie.\n\nOn croise les doigts pour toi\nTa team Soirée Match` }).catch(() => {});
+    text: `Bonjour ${prenom},\n\nMerci de ton intérêt pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nPour garantir une parité parfaite hommes/femmes, les places de ton profil sont complètes pour le moment. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.\n\n${isDeferred(so) ? "Dès qu'une place se libère pour toi, tu reçois un e-mail : ton inscription est alors enregistrée. Rien n'est débité tant que la soirée n'est pas confirmée — nous le faisons le samedi qui précède." : "Dès qu'une place se libère pour toi, tu reçois un e-mail avec un lien pour la confirmer — tu auras alors 3 heures pour la régler avant qu'elle ne passe à la personne suivante. Rien n'est débité tant que ta place n'est pas garantie."}\n\nOn croise les doigts pour toi\nTa team Soirée Match` }).catch(() => {});
 }
 function mailSlotOpen(so, r) {
   if (!transporter) return;
@@ -1559,6 +1714,34 @@ function mailSlotOpen(so, r) {
   const sujet = `Une place s'est libérée — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} (3h pour confirmer)`;
   transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: sujet, text: txt, html }).catch(() => {});
   logMails('Place libérée — 3h pour confirmer', sujet, txt, [r], so);
+}
+// Paiement différé : une place se libère — l'inscription passe simplement de la liste d'attente à inscrite.
+function mailSlotOpenFree(so, r) {
+  if (!transporter) return;
+  const prenom = (r.prenom || '').trim() || 'à toi';
+  const quand = so.date_texte ? ` du ${so.date_texte}` : '';
+  const sujet = `Une place s'est libérée — Soirée Match${quand}`;
+  const txt = `Bonjour ${prenom},\n\nBonne nouvelle : une place vient de se libérer pour toi pour la Soirée Match${quand}. Tu n'es plus sur la liste d'attente, ton inscription est enregistrée.\n\nRien n'est débité pour l'instant. Nous confirmons la soirée le samedi qui précède : tu recevras alors un e-mail avec un lien pour régler ta place, et tu auras jusqu'au lundi soir pour le faire.\n\nÀ très vite\nTa team Soirée Match`;
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : une place vient de se libérer pour toi pour la <b>Soirée Match${esc(quand)}</b>. Tu n'es plus sur la liste d'attente, ton inscription est enregistrée.</p><p><b>Rien n'est débité pour l'instant.</b> Nous confirmons la soirée le samedi qui précède : tu recevras alors un e-mail avec un lien pour régler ta place, et tu auras jusqu'au lundi soir pour le faire.</p><p>À très vite<br>Ta team Soirée Match</p>`;
+  transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: sujet, text: txt, html: emailShell(inner, unsubLink(r.email)) }).catch(() => {});
+  logMails('Place libérée — inscription enregistrée (paiement différé)', sujet, txt, [r], so);
+}
+// Paiement différé : la soirée est confirmée, voici le lien de paiement et l'échéance.
+function payNowMail(so, r, dlIso) {
+  const prenom = (r.prenom || '').trim() || 'à toi';
+  const quand = so.date_texte ? ` du ${so.date_texte}` : '';
+  const lim = echeanceTxt(dlIso);
+  const link = payLink(r.id, r.email);
+  const prix = so.prix ? ` (${so.prix})` : '';
+  const sujet = `C'est confirmé : Soirée Match${quand} — il reste à régler ta place`;
+  const txt = `Bonjour ${prenom},\n\nBonne nouvelle : la Soirée Match${quand} est confirmée, elle a bien lieu !${so.lieu ? `\nLieu : ${so.lieu}` : ''}\n\nIl ne reste qu'une chose à faire : régler ta place${prix}.\n\n${link}\n\nTu as jusqu'au ${lim}. Passé ce délai, ta place repart aux personnes en liste d'attente — on préfère te prévenir plutôt que de te faire la surprise.\n\nOn se réjouit de te voir. À très vite,\nL'équipe Soirée Match`;
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : la <b>Soirée Match${esc(quand)}</b> est confirmée, elle a bien lieu !</p>${so.lieu ? `<p>Lieu : ${esc(so.lieu)}</p>` : ''}<p>Il ne reste qu'une chose à faire : régler ta place${esc(prix)}.</p><p style="text-align:center;margin:22px 0"><a href="${link}" style="display:inline-block;background:#156b54;color:#fff;text-decoration:none;padding:12px 22px;border-radius:26px;font-weight:700">Régler ma place</a></p><p>Tu as jusqu'au <b>${esc(lim)}</b>. Passé ce délai, ta place repart aux personnes en liste d'attente — on préfère te prévenir plutôt que de te faire la surprise.</p><p>On se réjouit de te voir. À très vite,<br>L'équipe Soirée Match</p>`;
+  return { subject: sujet, text: txt, inner };
+}
+function mailPayNow(so, r, dlIso) {
+  if (!transporter) return;
+  const m = payNowMail(so, r, dlIso);
+  transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: m.subject, text: m.text, html: emailShell(m.inner, unsubLink(r.email)) }).catch(() => {});
 }
 function mailRefund(so, r, reason) {
   if (!transporter) return;
@@ -1602,36 +1785,40 @@ function mailCancel(so, r, motif, opts) {
   transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: m.subject, text: m.text, html: emailShell(m.inner, unsubLink(r.email)) }).catch(() => {});
 }
 function waitlistPage(so) {
-  return `${siteHead('Liste d\'attente — Soirée Match')}<div class=box><h1>Tu es sur la liste d'attente ⏳</h1><p>Pour garder une <b>parité parfaite</b> hommes/femmes, les places de ton profil sont complètes pour l'instant. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.</p><p>Dès qu'une place se libère pour toi, on t'envoie un e-mail avec un lien — tu auras <b>3 heures</b> pour la confirmer. Aucun paiement n'est demandé tant que ta place n'est pas garantie. 💛</p></div></html>`;
+  const suite = isDeferred(so)
+    ? `<p>Dès qu'une place se libère pour toi, on t'envoie un e-mail : ton inscription est alors enregistrée. <b>Aucun paiement n'est demandé</b> tant que la soirée n'est pas confirmée. 💛</p>`
+    : `<p>Dès qu'une place se libère pour toi, on t'envoie un e-mail avec un lien — tu auras <b>3 heures</b> pour la confirmer. Aucun paiement n'est demandé tant que ta place n'est pas garantie. 💛</p>`;
+  return `${siteHead('Liste d\'attente — Soirée Match')}<div class=box><h1>Tu es sur la liste d'attente ⏳</h1><p>Pour garder une <b>parité parfaite</b> hommes/femmes, les places de ton profil sont complètes pour l'instant. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.</p>${suite}</div></html>`;
 }
 
 // ---------- Aperçu avant annulation ----------
 // Lecture de la sélection de soirées (aperçu en GET / envoi en POST)
 function optsFromQuery(sp) {
   if (!sp.get('propset')) return null;
-  return { codes: sp.getAll('prop'), force: !!sp.get('force') };
+  return { codes: sp.getAll('prop'), force: !!sp.get('force'), modele: sp.get('modele') === 'sansdate' ? 'sansdate' : 'dates' };
 }
 function optsFromForm(d) {
   if (!d.propset) return null;
   let c = d.prop || [];
   if (!Array.isArray(c)) c = [c];
-  return { codes: c.map((x) => String(x)), force: !!d.force };
+  return { codes: c.map((x) => String(x)), force: !!d.force, modele: d.modele === 'sansdate' ? 'sansdate' : 'dates' };
 }
 function cancelPreviewBody(so, motif, o, opts) {
   const m = (motif || '').trim() || cancelMotif(so);
   const dispo = futureSoireesOpen(so.id);
   const codes = opts && Array.isArray(opts.codes) ? opts.codes : dispo.map((f) => f.code);
   const force = !!(opts && opts.force);
+  const modele = (opts && opts.modele === 'sansdate') ? 'sansdate' : 'dates';
   const cases = dispo.length
     ? dispo.map((f) => `<label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-weight:400"><input type=checkbox name=prop value="${esc(f.code)}"${codes.includes(f.code) ? ' checked' : ''}> ${esc(f.date_texte || f.code)}${f.tranche ? ` — ${esc(f.tranche)} ans` : ''}${f.type ? ` · ${esc(f.type)}` : ''}</label>`).join('')
     : '<p style="margin:6px 0 0;color:#7b8a83">Aucune autre soirée ouverte. Crée-la d\'abord dans « Soirées », puis reviens ici.</p>';
   const paid = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status='paid'").all(so.id);
   const autres = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND status IN ('waiting','hold')").all(so.id);
   const sample = paid[0] || { id: 0, prenom: 'Julie', nom: '', email: 'exemple@soireematch.com' };
-  const mail = cancelChoiceMail(so, sample, m, { codes, force });
+  const mail = modele === 'sansdate' ? cancelNoDateMail(so, sample, m, true) : cancelChoiceMail(so, sample, m, { codes, force });
   const html = emailShell(mail.inner, unsubLink(sample.email || 'exemple@soireematch.com'));
   const sample2 = autres[0] || { id: 0, prenom: 'Paul', nom: '', email: 'exemple@soireematch.com', genre: 'Homme', recherche: 'Des femmes', annee: new Date().getFullYear() - 45 };
-  const mail2 = cancelSimpleMail(so, sample2, m, { codes, force });
+  const mail2 = modele === 'sansdate' ? cancelNoDateMail(so, sample2, m, false) : cancelSimpleMail(so, sample2, m, { codes, force });
   const html2 = emailShell(mail2.inner, unsubLink(sample2.email || 'exemple@soireematch.com'));
   const liste = (arr) => arr.length
     ? '<ul style="margin:6px 0 0;padding-left:20px">' + arr.map((r) => `<li>${esc(((r.prenom || '') + ' ' + (r.nom || '')).trim())} — ${esc(r.email)}</li>`).join('') + '</ul>'
@@ -1643,20 +1830,26 @@ function cancelPreviewBody(so, motif, o, opts) {
   <p style="color:#c0392b;font-weight:700;margin:0">Rien n'est envoyé tant que tu n'as pas cliqué sur le bouton rouge en bas de page.</p>
 
   <div style="${box}">
-    <p style="margin:0"><b>${paid.length}</b> personne(s) ayant payé recevront l'e-mail « reporter ou être remboursé(e) » :</p>
+    <p style="margin:0"><b>${paid.length}</b> personne(s) ayant payé recevront ${modele === 'sansdate' ? "l'e-mail « annulée — tu es remboursé(e) », et <b>seront remboursées automatiquement</b>" : "l'e-mail « reporter ou être remboursé(e) »"} :</p>
     ${liste(paid)}
     <p style="margin:14px 0 0"><b>${autres.length}</b> personne(s) en liste d'attente ou à confirmer recevront un simple e-mail d'annulation :</p>
     ${liste(autres)}
-    <p style="margin:14px 0 0;color:#5b6b64;font-size:14px">Aucun remboursement n'est déclenché automatiquement : chaque personne choisit elle-même. Les inscrits qui n'ont pas réservé cette soirée ne reçoivent rien.</p>
+    <p style="margin:14px 0 0;color:#5b6b64;font-size:14px">${modele === 'sansdate' ? "Le remboursement part au moment de l'envoi, sans action de leur part. Si un remboursement Stripe échoue, la personne ne reçoit rien et tu reçois une alerte pour le traiter à la main." : "Aucun remboursement n'est déclenché automatiquement : chaque personne choisit elle-même."} Les inscrits qui n'ont pas réservé cette soirée ne reçoivent rien.</p>
   </div>
 
   <form id=fann method=post action="${o.action}" style="${box}">
     ${o.hidden}
     <input type=hidden name=propset value=1>
+    <label style="display:block;font-weight:700;margin-bottom:6px">Modèle d'e-mail</label>
+    <label style="display:flex;align-items:flex-start;gap:8px;margin:6px 0;font-weight:400"><input type=radio name=modele value=dates${modele === 'dates' ? ' checked' : ''} onchange="rafraichirApercu()"> <span><b>On propose d'autres dates.</b> Ceux qui ont payé choisissent eux-mêmes : déplacer leur inscription ou être remboursés. Ceux qui n'ont pas payé reçoivent les prochaines dates.</span></label>
+    <label style="display:flex;align-items:flex-start;gap:8px;margin:6px 0 14px;font-weight:400"><input type=radio name=modele value=sansdate${modele === 'sansdate' ? ' checked' : ''} onchange="rafraichirApercu()"> <span><b>On ne propose aucune date.</b> Ceux qui ont payé sont <b>remboursés automatiquement</b> ; tout le monde est prévenu qu'il sera averti dès qu'une date de son profil s'ouvre.</span></label>
+    ${modele === 'dates' ? `
     <label style="display:block;font-weight:700;margin-bottom:6px">Prochaines soirées à proposer dans l'e-mail</label>
     ${cases}
     <label style="display:flex;align-items:center;gap:8px;margin:10px 0 0;font-weight:400"><input type=checkbox name=force value=1${force ? ' checked' : ''}> Les proposer même aux personnes hors profil (âge, sexe, orientation)</label>
-    <p style="color:#5b6b64;font-size:14px;margin:6px 0 16px">Sans cette case, chacun ne voit que les dates qui lui correspondent. Elle n'agit que sur l'e-mail des <b>non-payés</b> : pour les personnes ayant payé, le report n'est possible que sur une soirée de leur profil.</p>
+    <p style="color:#5b6b64;font-size:14px;margin:6px 0 16px">Sans cette case, chacun ne voit que les dates qui lui correspondent. Elle n'agit que sur l'e-mail des <b>non-payés</b> : pour les personnes ayant payé, le report n'est possible que sur une soirée de leur profil.</p>` : `
+    <p style="color:#5b6b64;font-size:14px;margin:0 0 16px">Aucune date n'est proposée dans l'e-mail, et le bouton « Déplacer mon inscription » disparaît.</p>
+    ${codes.map((c) => `<input type=hidden name=prop value="${esc(c)}">`).join('')}${force ? '<input type=hidden name=force value=1>' : ''}`}
     <label style="display:block;font-weight:700;margin-bottom:6px">Raison de l'annulation — elle apparaît telle quelle dans l'e-mail</label>
     <textarea name=motif rows=3 style="width:100%;box-sizing:border-box;font:inherit;padding:8px;border:1px solid #c8d8d2;border-radius:8px">${esc(m)}</textarea>
     <p style="color:#5b6b64;font-size:14px;margin:8px 0 0">Modifie le texte puis clique « Rafraîchir l'aperçu » pour le relire dans l'e-mail. Le bouton rouge, lui, envoie pour de bon.</p>
@@ -1679,12 +1872,12 @@ function cancelPreviewBody(so, motif, o, opts) {
     }
   </script>
   <div style="${box}">
-    <p style="margin:0 0 8px"><b>Aperçu 1/2 — aux personnes ayant payé.</b> Objet : <i>${esc(mail.subject)}</i></p>
+    <p style="margin:0 0 8px"><b>Aperçu 1/2 — aux personnes ayant payé${modele === 'sansdate' ? ' (remboursées)' : ''}.</b> Objet : <i>${esc(mail.subject)}</i></p>
     <iframe srcdoc="${esc(html)}" style="width:100%;height:780px;border:1px solid #d7e6df;border-radius:8px;background:#fff"></iframe>
   </div>
   <div style="${box}">
     <p style="margin:0 0 8px"><b>Aperçu 2/2 — aux personnes sans paiement</b> (liste d'attente / à confirmer). Objet : <i>${esc(mail2.subject)}</i></p>
-    <p style="color:#5b6b64;font-size:14px;margin:0 0 8px">Les prochaines soirées affichées sont celles qui correspondent au profil de chaque destinataire — l'exemple ci-dessous utilise ${esc((sample2.prenom || 'un profil type'))}.</p>
+    ${modele === 'dates' ? `<p style="color:#5b6b64;font-size:14px;margin:0 0 8px">Les prochaines soirées affichées sont celles qui correspondent au profil de chaque destinataire — l'exemple ci-dessous utilise ${esc((sample2.prenom || 'un profil type'))}.</p>` : ''}
     <iframe srcdoc="${esc(html2)}" style="width:100%;height:780px;border:1px solid #d7e6df;border-radius:8px;background:#fff"></iframe>
   </div>`;
 }
@@ -1707,11 +1900,13 @@ function decisionCancelPage(so, t, motif, opts) {
 }
 function decisionPage(so, t) {
   const q = `sid=${so.id}&t=${encodeURIComponent(t)}`;
-  const stat = isParity(so) ? `${paidCount(so.id,'Femme')} femmes / ${paidCount(so.id,'Homme')} hommes payés (min ${minSexe(so)}/sexe)` : `${paidCount(so.id,null)} payés (min ${minTotal(so)})`;
+  const mot = isDeferred(so) ? 'inscrits' : 'payés';
+  const stat = isParity(so) ? `${engagedCount(so,'Femme')} femmes / ${engagedCount(so,'Homme')} hommes ${mot} (min ${minSexe(so)}/sexe)` : `${engagedCount(so,null)} ${mot} (min ${minTotal(so)})`;
   return `${siteHead('Décision — Soirée Match')}<div class=box>
     <h1>Soirée du ${esc(so.date_texte || so.code)}</h1>
     <p style="font-size:1.1rem"><b>${stat}</b><br>${isViable(so) ? '✅ Effectif suffisant.' : '⚠ Sous le minimum — il manque ' + esc(deficitTxt(so)) + '.'}${so.actif ? '' : '<br><span style="color:#8a6f5c">Inscriptions fermées.</span>'}</p>
     ${so.annulee ? '<p style="color:#c0392b;font-weight:700">Cette soirée est déjà annulée.</p>' : `
+    ${isDeferred(so) ? `<p style="color:#5b6b64">Paiement différé : en confirmant, chaque inscrit reçoit son lien de paiement, à régler avant le <b>${esc(echeanceTxt(new Date(payDeadlineMs(so)).toISOString()))}</b>.</p>` : ''}
     <form method=post action="/decision/confirm?${q}" style="margin:16px 0"><button class=btn>✅ Confirmer la soirée &amp; prévenir les participants</button></form>
     <form method=post action="/decision/close?${q}" style="margin:16px 0"><button class=btn style="background:#8a6f5c">🔒 Fermer les inscriptions (sans annuler)</button></form>
     <p style="margin:16px 0"><a class=btn style="background:#c0392b;display:inline-block;text-decoration:none" href="/decision/cancel?${q}">✕ Annuler la soirée…</a></p>`}
@@ -1874,7 +2069,7 @@ const server = http.createServer(async (req, res) => {
     if (!r) return send(res, 200, pubMsg('Lien invalide', 'Ce lien n\'est plus valable. Écris-nous à contact@soireematch.com.'));
     if (r.status === 'paid') return send(res, 200, pubMsg('Déjà confirmé', 'Ta place est déjà confirmée. À très vite ! 💛'));
     if (r.status !== 'hold' || (r.hold_expires && r.hold_expires < nowIso()))
-      return send(res, 200, pubMsg('Délai dépassé', 'Le délai de 3h pour confirmer cette place est écoulé. Si une place se libère à nouveau, on te recontacte. 💛'));
+      return send(res, 200, pubMsg('Délai dépassé', 'Le délai pour confirmer cette place est écoulé. Si une place se libère à nouveau, on te recontacte. 💛'));
     const so = getSoireeById(r.soiree_id);
     if (!so || !so.actif || so.annulee) return send(res, 200, pubMsg('Indisponible', 'Cette soirée n\'est plus disponible.'));
     if (!PAY_ON) { markPaidAndConfirm(r); return send(res, 200, soireeOkPage(so)); }
@@ -2104,8 +2299,8 @@ const server = http.createServer(async (req, res) => {
         try {
           const dstart = dtLocalToIso(d.date_start);
           const lieu = (d.lieu || '').trim() || VENUE_DEFAULT;
-          db.prepare('INSERT INTO soirees(code,date_texte,lieu,prix,actif,created_at,type,tranche,date_start,cap_sexe,min_sexe,cap_total) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(code, formatFr(dstart), lieu, (d.prix || '').trim(), d.actif ? 1 : 0, new Date().toISOString(), (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 8, Number(d.cap_total) || 30);
+          db.prepare('INSERT INTO soirees(code,date_texte,lieu,prix,actif,created_at,type,tranche,date_start,cap_sexe,min_sexe,cap_total,paiement) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            .run(code, formatFr(dstart), lieu, (d.prix || '').trim(), d.actif ? 1 : 0, new Date().toISOString(), (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 6, Number(d.cap_total) || 30, d.paiement === 'inscription' ? 'inscription' : 'differe');
         } catch { /* code déjà utilisé */ }
       }
       return send(res, 302, '', { Location: '/admin/soirees' });
@@ -2121,8 +2316,8 @@ const server = http.createServer(async (req, res) => {
       if (id) try {
         const dstart = dtLocalToIso(d.date_start);
         const lieu = (d.lieu || '').trim() || VENUE_DEFAULT;
-        db.prepare('UPDATE soirees SET code=?,date_texte=?,lieu=?,prix=?,actif=?,type=?,tranche=?,date_start=?,cap_sexe=?,min_sexe=?,cap_total=? WHERE id=?')
-          .run((d.code || '').trim().replace(/\s+/g, '').toLowerCase(), formatFr(dstart), lieu, (d.prix || '').trim(), d.actif ? 1 : 0, (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 8, Number(d.cap_total) || 30, id);
+        db.prepare('UPDATE soirees SET code=?,date_texte=?,lieu=?,prix=?,actif=?,type=?,tranche=?,date_start=?,cap_sexe=?,min_sexe=?,cap_total=?,paiement=? WHERE id=?')
+          .run((d.code || '').trim().replace(/\s+/g, '').toLowerCase(), formatFr(dstart), lieu, (d.prix || '').trim(), d.actif ? 1 : 0, (d.type || '').trim(), (d.tranche || '').trim(), dstart, Number(d.cap_sexe) || 15, Number(d.min_sexe) || 6, Number(d.cap_total) || 30, d.paiement === 'inscription' ? 'inscription' : 'differe', id);
       } catch { /* code en conflit */ }
       return send(res, 302, '', { Location: '/admin/soirees' });
     }
@@ -2199,7 +2394,8 @@ const server = http.createServer(async (req, res) => {
       const r = id && db.prepare('SELECT * FROM reservations WHERE id=?').get(id);
       if (r && r.status === 'waiting') {
         const so = getSoireeById(r.soiree_id);
-        if (!PAY_ON) { db.prepare("UPDATE reservations SET status='paid', paid=1, paid_at=? WHERE id=?").run(nowIso(), id); if (so) sendReservationMail(so, r); }
+        if (so && isDeferred(so)) { db.prepare("UPDATE reservations SET status='hold', hold_expires=NULL WHERE id=?").run(id); mailSlotOpenFree(so, r); }
+        else if (!PAY_ON) { db.prepare("UPDATE reservations SET status='paid', paid=1, paid_at=? WHERE id=?").run(nowIso(), id); if (so) sendReservationMail(so, r); }
         else { db.prepare("UPDATE reservations SET status='hold', hold_expires=? WHERE id=?").run(new Date(nowMs() + HOLD_MS).toISOString(), id); if (so) mailSlotOpen(so, r); }
       }
       return send(res, 302, '', { Location: r ? `/admin/soirees/reservations?id=${r.soiree_id}&done=1` : '/admin/soirees' });
