@@ -1551,7 +1551,7 @@ function cancelNoDateMail(so, r, motif, paid) {
   const argentTxt = paid
     ? "Ta place est intégralement remboursée : le montant réapparaîtra sur ton moyen de paiement d'ici quelques jours, le délai dépend de ta banque. Tu n'as rien à faire."
     : "Tu n'avais pas encore réglé ta place : rien n'a été débité et tu n'as rien à faire.";
-  const suite = "Nous n'avons pas de nouvelle date à te proposer pour l'instant dans ta tranche d'âge. Dès qu'une s'ouvre, tu seras averti(e) par e-mail — tu restes inscrit(e).";
+  const suite = "Nous n'avons pas de nouvelle date à te proposer pour l'instant dans ta tranche d'âge. Cependant, dès qu'une s'ouvre, et ça ne saurait tarder, tu seras averti(e) par e-mail.";
   const inner = `<p>Bonjour ${esc(prenom)},</p>`
     + `<p>La <b>Soirée Match du ${esc(dateTxt)}</b> n'aura malheureusement pas lieu. ${esc(m)}</p>`
     + argent
