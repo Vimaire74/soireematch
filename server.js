@@ -486,15 +486,17 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
       : `<div style="margin:12px 0;color:#8a9a99">${esc(aucune)}</div>`;
     const dateR = eligibles.length ? eligibles.map((x) => x.date_texte || x.code).join(' ou le ') : dateTxt;
     const opp = r.genre === 'Homme' ? 'femmes déjà inscrites' : (r.genre === 'Femme' ? 'hommes déjà inscrits' : 'femmes et hommes déjà inscrits');
+    // {sexe_oppose} = le groupe déjà inscrit (pluriel) · {sexe_oppose_sing} = la personne recherchée (singulier, article compris)
+    const oppS = r.genre === 'Homme' ? 'la femme' : (r.genre === 'Femme' ? "l'homme" : 'la personne');
     const lieuR = eligibles.length ? (eligibles[0].lieu || '') : lieuTxt;
-    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque\}/gi, manqueTxt).replace(/\{sexe_oppose\}/gi, opp).replace(/\{soirees\}/gi, sT);
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque\}/gi, manqueTxt).replace(/\{sexe_oppose_sing\}/gi, oppS).replace(/\{sexe_oppose\}/gi, opp).replace(/\{soirees\}/gi, sT);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
     const btn = `<a href="${resa}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réserve ma place</a>`;
     const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
-      .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque\}/gi, esc(manqueTxt)).replace(/\{sexe_oppose\}/gi, esc(opp))
+      .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque\}/gi, esc(manqueTxt)).replace(/\{sexe_oppose_sing\}/gi, esc(oppS)).replace(/\{sexe_oppose\}/gi, esc(opp))
       .replace(/\{soirees\}/gi, sH)
       .replace(/\n/g, '<br>');
     const html = emailShell(htmlBody, unsub);
@@ -1012,11 +1014,13 @@ L'équipe Soirée Match`,
     subject: 'Il ne reste que quelques jours pour t\'inscrire',
     body: `Bonjour {prenom},
 
-Petit rappel : chaque Soirée Match se décide au plus tard le samedi qui précède — c'est la date limite pour t'inscrire et faire en sorte qu'elle ait lieu. Après, il sera peut-être trop tard, et s'il n'y a pas assez d'inscrits, nous devrons annuler la soirée.
-
-Voici les dates qui te concernent :
+Ta prochaine soirée pour rencontrer {sexe_oppose_sing} de tes rêves :
 
 {soirees}
+
+Inscris-toi !
+
+Chaque Soirée Match se décide au plus tard le samedi qui précède — c'est la date limite pour t'inscrire et faire en sorte qu'elle ait lieu. Après, il sera peut-être trop tard, et s'il n'y a pas assez d'inscrits, nous devrons annuler la soirée.
 
 Les {sexe_oppose} comptent sur ton engagement.
 
