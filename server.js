@@ -44,6 +44,25 @@ db.exec(`CREATE TABLE IF NOT EXISTS pageviews(
   ref TEXT, lang TEXT, vhash TEXT
 )`);
 
+// ---------- Adresses bannies ----------
+// Ces adresses peuvent remplir le formulaire : la page répond normalement, mais aucune
+// inscription n'est enregistrée et aucun e-mail ne part. Elles ne peuvent pas réserver non plus.
+// Pour en ajouter une sans toucher au code : variable BLOCKLIST dans Coolify, adresses séparées par des virgules.
+const BLOCKLIST = new Set([
+  'martinemmanuelle86@gmail.com',
+  'mel.glauser@gmail.com',
+  ...String(process.env.BLOCKLIST || '').split(',').map((x) => x.trim()).filter(Boolean),
+].map((x) => x.toLowerCase()));
+const estBanni = (email) => BLOCKLIST.has(String(email || '').trim().toLowerCase());
+function alerteBanni(email, quoi) {
+  console.warn('Adresse bannie bloquée (' + quoi + ') :', email);
+  const to = process.env.NOTIFY_TO || '';
+  if (!to || !transporter) return;
+  transporter.sendMail({ from: MAIL_FROM, to,
+    subject: `Adresse bannie bloquée — ${email}`,
+    text: `L'adresse ${email} vient de tenter : ${quoi}.\nRien n'a été enregistré, aucun e-mail ne lui a été envoyé.\n\n— Soirée Match` }).catch(() => {});
+}
+
 // ---------- E-mail (OVH Zimbra SMTP) ----------
 const MAIL_USER = process.env.MAIL_USER || '';
 const MAIL_PASS = process.env.MAIL_PASS || '';
@@ -345,6 +364,11 @@ function verifyStripeSig(payload, header, secret) {
 async function startReservation(res, so, person) {
   if (!so || so.annulee || !so.actif) return send(res, 200, pubMsg('Soirée indisponible', 'Cette soirée n\'est plus ouverte aux réservations. Les prochaines dates sont sur soireematch.com.'));
   const email = person.email, genre = person.genre;
+  // Adresse bannie : ici on ne peut pas faire semblant — elle croirait avoir une place et se présenterait sur place.
+  if (estBanni(email)) {
+    alerteBanni(email, `une réservation pour la soirée ${so.code}`);
+    return send(res, 200, pubMsg('Réservation impossible', 'Nous ne pouvons pas enregistrer de réservation pour cette adresse. Pour toute question, écris-nous à contact@soireematch.com.'));
+  }
   // déjà confirmé ?
   if (db.prepare("SELECT id FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND status='paid'").get(so.id, email))
     return send(res, 200, pubMsg('Déjà réservé', 'Ta place pour cette soirée est déjà confirmée. À très vite ! 💛'));
@@ -558,7 +582,8 @@ function recipientsFor({ genre, recherche, tranche }) {
   let sql = 'SELECT prenom, email, genre, recherche, annee, langues, COALESCE(toutes_listes,0) AS toutes_listes'
     + ' FROM inscriptions WHERE COALESCE(unsubscribed,0)=0 AND COALESCE(confirmed,0)=1';
   if (cond.length) sql += ` AND ((${cond.join(' AND ')}) OR COALESCE(toutes_listes,0)=1)`;
-  return db.prepare(sql).all(...args);
+  // Filet de sécurité : une adresse bannie déjà présente dans la base ne reçoit plus rien.
+  return db.prepare(sql).all(...args).filter((r) => !estBanni(r.email));
 }
 
 // ---------- Statistiques ----------
@@ -1985,6 +2010,8 @@ const server = http.createServer(async (req, res) => {
         !(annee >= 1930 && annee <= new Date().getFullYear()) || !genre || !recherche || !consent) {
       return json(res, 400, { ok: false, error: 'Merci de remplir tous les champs correctement (et de cocher le consentement).' });
     }
+    // Adresse bannie : on répond « ok » pour ne pas l'informer, mais rien n'est enregistré ni envoyé.
+    if (estBanni(email)) { alerteBanni(email, "une inscription à la liste"); return json(res, 200, { ok: true }); }
     const existing = db.prepare('SELECT id, COALESCE(confirmed,0) c FROM inscriptions WHERE lower(email)=lower(?)').get(email);
     if (existing && existing.c === 1) return json(res, 200, { ok: true });   // déjà inscrit et confirmé
     if (existing) {
