@@ -68,7 +68,12 @@ function sendConfirmation(i) {
   if (!transporter) return;
   const prenom = (i.prenom || '').trim() || 'à toi';
   const now = Date.now();
-  const soirees = matchingSoirees(i).filter((so) => !so.date_start || new Date(so.date_start).getTime() >= now);
+  // Même règle que les campagnes : on ne propose pas une soirée déjà réservée
+  // (cas du bouton « renvoyer l'e-mail de bienvenue » sur quelqu'un qui a déjà réservé).
+  const prises = soireesDejaPrises(i.email);
+  const soirees = matchingSoirees(i)
+    .filter((so) => !so.date_start || new Date(so.date_start).getTime() >= now)
+    .filter((so) => !prises.has(so.id));
   const unsub = unsubLink(i.email);
   const listeTxt = soirees.length
     ? "\n\nVoici les prochaines soirées qui te correspondent — clique pour réserver ta place :\n\n" + soirees.map((so) => `• ${so.date_texte || so.code}${soireeMetaShort(so) ? ' · ' + soireeMetaShort(so) : ''}${so.lieu ? '\n  ' + so.lieu : ''}\n  Réserver : ${resaLinkSoiree(i.email, so.code)}`).join('\n\n')
@@ -192,6 +197,9 @@ function rateLimited(ip) {
 // ---------- Désinscription + campagnes e-mail ----------
 try { db.exec('ALTER TABLE inscriptions ADD COLUMN unsubscribed INTEGER DEFAULT 0'); } catch { /* colonne déjà présente */ }
 try { db.exec('ALTER TABLE inscriptions ADD COLUMN langues TEXT'); } catch { /* colonne déjà présente */ }
+// Fiche de contrôle : reçoit TOUTES les campagnes et voit TOUTES les soirées,
+// quels que soient son genre, son orientation et son âge. Sert à Marc pour se relire.
+try { db.exec('ALTER TABLE inscriptions ADD COLUMN toutes_listes INTEGER DEFAULT 0'); } catch { /* colonne déjà présente */ }
 try {
   db.exec('ALTER TABLE inscriptions ADD COLUMN confirmed INTEGER DEFAULT 0');
   db.exec('UPDATE inscriptions SET confirmed=1');   // 1re migration : les inscrits déjà présents sont considérés confirmés
@@ -421,7 +429,17 @@ function matchingSoirees(person) {
   return db.prepare('SELECT * FROM soirees WHERE actif=1 ORDER BY id DESC').all()
     .filter((s) => (!s.type || types.includes(s.type)) && trancheOk(s.tranche, age));
 }
+// Soirées où cette adresse a déjà une réservation active : payée, en attente de paiement
+// (hold, y compris l'inscription gratuite du paiement différé) ou en liste d'attente.
+// Les réservations expirées, annulées ou remboursées ne comptent pas : la personne peut se réinscrire.
+function soireesDejaPrises(email) {
+  try {
+    const rows = db.prepare("SELECT DISTINCT soiree_id FROM reservations WHERE lower(email)=lower(?) AND status IN ('paid','hold','waiting')").all(String(email || ''));
+    return new Set(rows.map((x) => x.soiree_id));
+  } catch { return new Set(); }
+}
 function eligibleForSoiree(person, so) {
+  if (person && Number(person.toutes_listes) === 1) return true;   // fiche de contrôle
   const types = allowedTypes(person.genre, person.recherche);
   if (!types.length) return false;
   if (so.type && !types.includes(so.type)) return false;
@@ -476,8 +494,15 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const prenom = (r.prenom || '').trim() || 'à toi';
     const unsub = unsubLink(r.email);
     const resa = resaLink(r.email);
-    const eligibles = forceEligible ? allSoirees : allSoirees.filter((so2) => eligibleForSoiree(r, so2));
-    const aucune = "Aucune date ne correspond à ton profil pour le moment — on t'écrit dès qu'une nouvelle soirée s'ouvre pour toi.";
+    // On ne propose jamais une soirée que la personne a déjà réservée (elle recevrait un « réserve ta place » absurde).
+    const prises = soireesDejaPrises(r.email);
+    const pourSonProfil = forceEligible ? allSoirees : allSoirees.filter((so2) => eligibleForSoiree(r, so2));
+    const eligibles = pourSonProfil.filter((so2) => !prises.has(so2.id));
+    // Deux raisons de n'avoir aucune date à proposer, et deux messages différents :
+    // soit rien ne correspond à son profil, soit elle est déjà inscrite à tout ce qui correspond.
+    const aucune = (!eligibles.length && pourSonProfil.length)
+      ? "Tu es déjà inscrit(e) à toutes les dates ouvertes pour ton profil — rien à faire de ton côté, on se voit sur place."
+      : "Aucune date ne correspond à ton profil pour le moment — on t'écrit dès qu'une nouvelle soirée s'ouvre pour toi.";
     const sT = eligibles.length
       ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${soireeMetaShort(so2) ? ' · ' + soireeMetaShort(so2) : ''}${so2.lieu ? '\n  ' + so2.lieu : ''}\n  Réserver : ${resaLinkSoiree(r.email, so2.code)}`).join('\n\n')
       : aucune;
@@ -517,18 +542,22 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
 
 // Destinataires (exclut les désinscrits) selon genre / recherche / "tous"
 function recipientsFor({ genre, recherche, tranche }) {
-  let sql = 'SELECT prenom, email, genre, recherche, annee, langues FROM inscriptions WHERE COALESCE(unsubscribed,0)=0 AND COALESCE(confirmed,0)=1', args = [];
-  if (genre) { sql += ' AND genre=?'; args.push(genre); }
-  if (recherche) { sql += ' AND recherche=?'; args.push(recherche); }
+  const cond = [], args = [];
+  if (genre) { cond.push('genre=?'); args.push(genre); }
+  if (recherche) { cond.push('recherche=?'); args.push(recherche); }
   if (tranche && /^\d+-\d+$/.test(tranche)) {
     const [lo, hi] = tranche.split('-').map(Number);
     const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)";
-    sql += ` AND annee IS NOT NULL AND ${age} >= ? AND ${age} < ?`;
+    cond.push(`(annee IS NOT NULL AND ${age} >= ? AND ${age} < ?)`);
     args.push(lo, hi);
   } else if (tranche === '60+') {
     const age = "(CAST(strftime('%Y','now') AS INTEGER) - annee)";
-    sql += ` AND annee IS NOT NULL AND ${age} >= 60`;
+    cond.push(`(annee IS NOT NULL AND ${age} >= 60)`);
   }
+  // La fiche de contrôle échappe aux filtres « À qui ? » : elle reçoit toujours l'e-mail.
+  let sql = 'SELECT prenom, email, genre, recherche, annee, langues, COALESCE(toutes_listes,0) AS toutes_listes'
+    + ' FROM inscriptions WHERE COALESCE(unsubscribed,0)=0 AND COALESCE(confirmed,0)=1';
+  if (cond.length) sql += ` AND ((${cond.join(' AND ')}) OR COALESCE(toutes_listes,0)=1)`;
   return db.prepare(sql).all(...args);
 }
 
@@ -702,7 +731,7 @@ function adminPage(query) {
     <td><input type=checkbox name=ids value=${r.id} form=act></td>
     <td>${esc(r.created_at.slice(0, 10))}</td>
     <td>${esc(r.prenom)}</td><td>${esc(r.nom)}</td>
-    <td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a>${r.unsubscribed ? ' <span title="Désinscrit" style="color:#c0392b">🚫</span>' : ''}</td>
+    <td><a href="mailto:${esc(r.email)}">${esc(r.email)}</a>${r.unsubscribed ? ' <span title="Désinscrit" style="color:#c0392b">🚫</span>' : ''}${r.toutes_listes ? ' <span title="Fiche de contrôle : reçoit toutes les campagnes" style="color:#8a6f5c">🔎</span>' : ''}</td>
     <td>${esc(r.tel)}</td><td>${esc(r.annee)}</td>
     <td>${esc(r.genre)}</td><td>${esc(r.recherche)}</td>
     <td>${esc(r.langues || '')}</td>
@@ -730,6 +759,13 @@ function adminPage(query) {
       <select name=tranche><option value="">Tous âges</option>${['20-30', '30-40', '40-50', '50-60', '60+'].map((v) => `<option value="${v}"${v === ft ? ' selected' : ''}>${v} ans</option>`).join('')}</select>
       <button>Filtrer</button>
       <a href=/admin><button type=button class=sec>Réinitialiser</button></a>
+    </form>
+
+    <form method=post action=/admin/controle style="margin:10px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <span class=hint>Fiche de contrôle&nbsp;:</span>
+      <input name=email type=email placeholder="ton adresse" style="min-width:230px" required>
+      <button type=submit class=sec>🔎 Recevoir toutes les campagnes</button>
+      <span class=hint>Crée la fiche si elle n'existe pas, sans e-mail de confirmation, et lui fait recevoir tous les envois quel que soit le ciblage.</span>
     </form>
 
     <form id=act method=post></form>
@@ -1081,7 +1117,8 @@ function composePage() {
       </div>
       <p class=hint>Si tu coches <b>une seule</b> soirée, les balises {lien}, {date} et {lieu} pointent vers elle. Si tu en coches plusieurs (ou aucune), utilise <b>{soirees}</b> pour toutes les lister ; {lien} mène alors au site.</p>
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=auto checked> Envoyer uniquement aux personnes concernées par les soirées cochées (âge ±3, sexe, orientation)</label>
-      <p class=hint>Ce filtre <b>s'ajoute</b> aux réglages « À qui ? » ci-dessus : si tu choisis Genre = Homme, seuls les hommes concernés recevront l'e-mail.</p>
+      <p class=hint>Ce filtre <b>s'ajoute</b> aux réglages « À qui ? » ci-dessus : si tu choisis Genre = Homme, seuls les hommes concernés recevront l'e-mail. Les personnes <b>déjà inscrites</b> à ces soirées (payées, en attente de paiement ou en liste d'attente) sont automatiquement écartées.</p>
+      <p class=hint>Dans tous les cas, la balise <code>{soirees}</code> ne propose jamais à quelqu'un une soirée qu'il a déjà réservée.</p>
 
       <label>Objet</label>
       <input id=subject name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
@@ -1201,6 +1238,8 @@ function editPage(r) {
       <label>Genre</label><select name=genre>${['Femme', 'Homme', 'Non binaire'].map((v) => opt(v, r.genre)).join('')}</select>
       <label>Intéressé(e) par</label><select name=recherche>${['Des hommes', 'Des femmes', 'Les deux'].map((v) => opt(v, r.recherche)).join('')}</select>
       <label style="display:flex;gap:8px;align-items:center"><input type=checkbox name=unsub ${r.unsubscribed ? 'checked' : ''} style="width:auto"> Désinscrit (ne plus lui envoyer d'e-mails)</label>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type=checkbox name=toutes ${r.toutes_listes ? 'checked' : ''} style="width:auto"> <b>Fiche de contrôle</b> — reçoit toutes les campagnes et voit toutes les soirées</label>
+      <p class=hint style="margin-top:4px">À réserver à ta propre adresse. Cette fiche ignore les filtres genre, orientation et âge : elle reçoit chaque envoi, quel que soit le ciblage, et le bloc <code>{soirees}</code> lui montre toutes les dates ouvertes. Elle compte dans le total des inscrits — ne la fais pas réserver une place, elle occuperait un vrai siège.</p>
       <div style="margin-top:16px"><button>Enregistrer</button> <a href="/admin"><button type=button class=sec>Annuler</button></a></div>
     </form>
   </div></html>`;
@@ -2249,8 +2288,13 @@ const server = http.createServer(async (req, res) => {
       const auto = (d.auto === 'on' || d.auto === '1');
       // Les filtres « À qui ? » (genre / recherche / tranche) s'appliquent TOUJOURS,
       // y compris quand le ciblage automatique par soirée est coché.
+      // Ciblage automatique : on retire aussi les personnes déjà inscrites à toutes les soirées cochées
+      // — sinon elles reçoivent une invitation à réserver une place qu'elles ont déjà payée.
       const recips = (auto && selected.length)
-        ? recipientsFor({ genre, recherche, tranche }).filter((p) => selected.some((sel) => eligibleForSoiree(p, sel)))
+        ? recipientsFor({ genre, recherche, tranche }).filter((p) => {
+            const prises = soireesDejaPrises(p.email);
+            return selected.some((sel) => eligibleForSoiree(p, sel) && !prises.has(sel.id));
+          })
         : recipientsFor({ genre, recherche, tranche });
       const tpl = (d.tpl_name || '').trim();
       const emails = recips.map((r) => r.email).join(', ');
@@ -2405,6 +2449,18 @@ const server = http.createServer(async (req, res) => {
       return send(res, 302, '', { Location: r ? `/admin/soirees/reservations?id=${r.soiree_id}&done=1` : '/admin/soirees' });
     }
 
+    // Fiche de contrôle : crée l'inscription si besoin, déjà confirmée, et lui donne toutes les listes
+    if (p === '/admin/controle' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      const email = (d.email || '').trim();
+      if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        const ex = db.prepare('SELECT id FROM inscriptions WHERE lower(email)=lower(?)').get(email);
+        if (ex) db.prepare('UPDATE inscriptions SET toutes_listes=1, confirmed=1, unsubscribed=0 WHERE id=?').run(ex.id);
+        else db.prepare('INSERT INTO inscriptions(created_at,prenom,nom,email,tel,annee,genre,recherche,langues,consent,confirmed,welcome_sent,unsubscribed,toutes_listes)'
+                      + " VALUES(?,'Contrôle','',?,'',NULL,'Homme','Des femmes','Français',1,1,1,0,1)").run(nowIso(), email);
+      }
+      return send(res, 302, '', { Location: '/admin' });
+    }
     // Éditer une fiche
     if (p === '/admin/edit' && req.method === 'GET') {
       const id = Number(url.searchParams.get('id'));
@@ -2415,9 +2471,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/admin/edit' && req.method === 'POST') {
       const d = parseForm(await readBody(req));
       const id = Number(d.id);
-      if (id) db.prepare('UPDATE inscriptions SET prenom=?,nom=?,email=?,tel=?,annee=?,genre=?,recherche=?,unsubscribed=? WHERE id=?')
+      if (id) db.prepare('UPDATE inscriptions SET prenom=?,nom=?,email=?,tel=?,annee=?,genre=?,recherche=?,unsubscribed=?,toutes_listes=? WHERE id=?')
         .run((d.prenom || '').trim(), (d.nom || '').trim(), (d.email || '').trim(), (d.tel || '').trim(),
-             parseInt(d.annee, 10) || null, (d.genre || '').trim(), (d.recherche || '').trim(), d.unsub ? 1 : 0, id);
+             parseInt(d.annee, 10) || null, (d.genre || '').trim(), (d.recherche || '').trim(), d.unsub ? 1 : 0, d.toutes ? 1 : 0, id);
       return send(res, 302, '', { Location: '/admin' });
     }
 
