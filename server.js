@@ -798,6 +798,7 @@ function adminPage(query) {
       <a href="/admin/compose"><button type=button>✉ Écrire aux inscrits</button></a>
       <a href="/admin/test"><button type=button class=sec>🧪 E-mail de test</button></a>
       <a href="/admin/emails"><button type=button class=sec>📋 E-mails envoyés</button></a>
+      <a href="/admin/backup"><button type=button class=sec>💾 Sauvegarder la base</button></a>
       <button form=act formaction=/admin/export>⬇ Exporter la sélection (CSV)</button>
       <a href="/admin/export?all=1${q || fg || fr || fl || ft ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) + '&langue=' + encodeURIComponent(fl) + '&tranche=' + encodeURIComponent(ft) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
       <button form=act formaction=/admin/delete class=danger onclick="return confirm('Supprimer les inscriptions sélectionnées ?')">🗑 Supprimer la sélection</button>
@@ -1270,6 +1271,37 @@ function editPage(r) {
   </div></html>`;
 }
 
+// ---------- Sauvegarde de la base ----------
+// On télécharge le fichier TEL QUEL, octet pour octet. Pas de VACUUM ni de compactage :
+// une base compactée perdrait les pages libérées, donc toute chance de récupérer des lignes effacées.
+function backupFiles() {
+  try {
+    return fs.readdirSync(DATA_DIR)
+      .filter((n) => /^soireematch\.db(-journal|-wal|-shm)?$/.test(n))
+      .map((n) => { const st = fs.statSync(path.join(DATA_DIR, n)); return { nom: n, taille: st.size, date: st.mtime.toISOString().slice(0, 16).replace('T', ' ') }; })
+      .filter((f) => f.taille > 0);
+  } catch { return []; }
+}
+function backupPage() {
+  const fichiers = backupFiles();
+  const ko = (n) => (n < 1024 ? n + ' o' : (n < 1024 * 1024 ? Math.round(n / 1024) + ' Ko' : (n / 1048576).toFixed(1) + ' Mo'));
+  const lignes = fichiers.length
+    ? fichiers.map((f) => `<tr><td><b>${esc(f.nom)}</b></td><td>${ko(f.taille)}</td><td>${esc(f.date)}</td><td><a href="/admin/backup/fichier?nom=${encodeURIComponent(f.nom)}"><button type=button>⬇ Télécharger</button></a></td></tr>`).join('')
+    : '<tr><td colspan=4 style="color:#7b8a83">Aucun fichier de base trouvé.</td></tr>';
+  return `${pageHead('Sauvegarde')}
+  <div class=wrap>
+    <a class=back href="/admin">← Retour aux inscriptions</a>
+    <h2>Sauvegarde de la base</h2>
+    <p>Tout est là-dedans : inscrits, réservations, paiements, journal des e-mails, soirées. Un clic, le fichier arrive dans tes téléchargements.</p>
+    <table style="margin-top:14px"><tr><th>Fichier</th><th>Taille</th><th>Dernière écriture</th><th></th></tr>${lignes}</table>
+    <div class=panel style="margin-top:18px">
+      <p style="margin:0 0 8px"><b>À quoi ça sert</b></p>
+      <p style="margin:0 0 8px">Range le fichier téléchargé quelque part de sûr, avec la date dans le nom. Si le serveur tombe, si une manipulation efface des données, ou si tu veux simplement dormir tranquille, c'est ce fichier qui te sauve. Fais-le une fois par semaine, et toujours avant un déploiement.</p>
+      <p style="margin:0 0 8px"><b>Si plusieurs fichiers apparaissent</b>, télécharge-les tous : <code>-journal</code>, <code>-wal</code> et <code>-shm</code> contiennent des écritures récentes qui ne sont pas encore dans le fichier principal.</p>
+      <p style="margin:0;color:#5b6b64;font-size:14px">Le fichier est copié tel quel, sans compactage : les données récemment effacées y restent parfois récupérables. C'est volontaire.</p>
+    </div>
+  </div></html>`;
+}
 function unsubPage(ok) {
   return ok
     ? pubMsg('C\'est fait ✓', 'Tu ne recevras plus d\'e-mails de la Soirée Match, et tu ne verras plus les prochaines soirées. Si c\'était une erreur, réinscris-toi sur soireematch.com ou écris-nous à contact@soireematch.com.')
@@ -2476,6 +2508,18 @@ const server = http.createServer(async (req, res) => {
       return send(res, 302, '', { Location: r ? `/admin/soirees/reservations?id=${r.soiree_id}&done=1` : '/admin/soirees' });
     }
 
+    if (p === '/admin/backup' && req.method === 'GET') return send(res, 200, backupPage());
+    if (p === '/admin/backup/fichier' && req.method === 'GET') {
+      const nom = String(url.searchParams.get('nom') || '');
+      if (!backupFiles().some((f) => f.nom === nom)) return send(res, 404, pubMsg('Introuvable', 'Ce fichier n\'existe pas.'));
+      let buf; try { buf = fs.readFileSync(path.join(DATA_DIR, nom)); } catch { return send(res, 500, pubMsg('Erreur', 'Lecture impossible.')); }
+      const jour = new Date().toISOString().slice(0, 10);
+      return send(res, 200, buf, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(buf.length),
+        'Content-Disposition': `attachment; filename="soireematch-${jour}-${nom}"`,
+      });
+    }
     // Fiche de contrôle : crée l'inscription si besoin, déjà confirmée, et lui donne toutes les listes
     if (p === '/admin/controle' && req.method === 'POST') {
       const d = parseForm(await readBody(req));
