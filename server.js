@@ -985,11 +985,24 @@ function soireeEditPage(s) {
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif ${s.actif ? 'checked' : ''} style="width:auto"> Active</label>
       <div style="margin-top:14px"><button>Enregistrer</button> <a href="/admin/soirees"><button type=button class=sec>Annuler</button></a></div>
     </form>
-    <form class=panel method=post action=/admin/soirees/delete onsubmit="return confirm('Supprimer cette soirée ET ses réservations ?')" style="margin-top:14px;border-color:#e0b4b0">
-      <input type=hidden name=id value=${s.id}>
-      <button class=danger>🗑 Supprimer la soirée</button>
-      <span class=hint>&nbsp;Supprime aussi ses réservations.</span>
-    </form>
+    <div class=panel style="margin-top:14px">
+      <p style="margin:0 0 8px"><b>Annuler cette soirée</b></p>
+      <p class=hint style="margin:0 0 10px">C'est le bon bouton : il ouvre l'aperçu des e-mails, prévient tout le monde et déclenche les remboursements. Rien n'est envoyé tant que tu n'as pas validé l'aperçu.</p>
+      <form method=get action=/admin/soirees/cancel><input type=hidden name=id value=${s.id}><button class=danger>✕ Annuler la soirée et prévenir les inscrits</button></form>
+    </div>
+    ${(() => {
+      const vivantes = db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status IN ('paid','hold','waiting')").get(s.id).n;
+      return vivantes
+        ? `<div class=panel style="margin-top:14px;border-color:#e0b4b0">
+             <p style="margin:0 0 6px"><b>🗑 Supprimer la soirée</b> — indisponible</p>
+             <p class=hint style="margin:0"><b>${vivantes}</b> réservation(s) vivante(s) sur cette soirée. La suppression effacerait ces personnes sans les prévenir ni les rembourser, et sans laisser de trace. Utilise « Annuler la soirée et prévenir les inscrits » ci-dessus : une fois tout le monde prévenu et remboursé, la suppression redeviendra possible.</p>
+           </div>`
+        : `<form class=panel method=post action=/admin/soirees/delete onsubmit="return confirm('Supprimer définitivement cette soirée ? Cette action est irréversible.')" style="margin-top:14px;border-color:#e0b4b0">
+             <input type=hidden name=id value=${s.id}>
+             <button class=danger>🗑 Supprimer la soirée</button>
+             <span class=hint>&nbsp;Aucune réservation vivante : rien ne sera perdu d'important.</span>
+           </form>`;
+    })()}
   </div></html>`;
 }
 function reservationsPage(s, done) {
@@ -1021,6 +1034,7 @@ function reservationsPage(s, done) {
     </div>
     <div class=bar>
       <a href="/admin/soirees/reservations/export?id=${s.id}"><button type=button>⬇ Exporter (CSV)</button></a>
+      <a href="/admin/soirees/resa/ajouter?soiree=${s.id}"><button type=button class=sec>➕ Ajouter une réservation</button></a>
       <form method=post action=/admin/soirees/run-checks style="display:inline"><input type=hidden name=id value=${s.id}><button class=sec>🔄 Lancer les vérifications</button></form>
       ${s.annulee ? '<span style="color:#c0392b;font-weight:600;align-self:center">Soirée annulée</span>' : `
       <form method=post action=/admin/soirees/confirm style="display:inline" onsubmit="return confirm('Confirmer la soirée et prévenir tous les inscrits payés ?')"><input type=hidden name=id value=${s.id}><button class=sec>✅ Confirmer &amp; prévenir</button></form>
@@ -1281,6 +1295,36 @@ function backupFiles() {
       .map((n) => { const st = fs.statSync(path.join(DATA_DIR, n)); return { nom: n, taille: st.size, date: st.mtime.toISOString().slice(0, 16).replace('T', ' ') }; })
       .filter((f) => f.taille > 0);
   } catch { return []; }
+}
+function ajoutResaPage(so, msg) {
+  const opt = (v) => `<option>${esc(v)}</option>`;
+  return `${pageHead('Ajouter une réservation')}
+  <div class=wrap>
+    <a class=back href="/admin/soirees/reservations?id=${so.id}">← Retour aux réservations</a>
+    <h2>Ajouter une réservation — ${esc(so.date_texte || so.code)}</h2>
+    ${msg ? `<p style="color:#c0392b;font-weight:700">${esc(msg)}</p>` : ''}
+    <p class=hint>À utiliser pour inscrire quelqu'un à la main : paiement reçu autrement, inscription par téléphone, ou réparation après une fausse manœuvre. Aucun e-mail n'est envoyé, et les règles de parité ne s'appliquent pas — c'est toi qui décides.</p>
+    <form class=panel method=post action=/admin/soirees/resa/ajouter>
+      <input type=hidden name=soiree value=${so.id}>
+      <label>Prénom</label><input name=prenom style="width:100%" required>
+      <label>Nom</label><input name=nom style="width:100%">
+      <label>E-mail</label><input name=email type=email style="width:100%" required>
+      <label>Téléphone</label><input name=tel style="width:100%">
+      <label>Année de naissance</label><input name=annee type=number style="width:100%">
+      <label>Genre</label><select name=genre style="width:100%">${['Femme', 'Homme'].map(opt).join('')}</select>
+      <label>Intéressé(e) par</label><select name=recherche style="width:100%">${['Des hommes', 'Des femmes'].map(opt).join('')}</select>
+      <label>Statut</label>
+      <select name=statut style="width:100%">
+        <option value="paid">A payé — place confirmée</option>
+        <option value="hold">Inscrit, pas encore payé</option>
+        <option value="waiting">Liste d'attente</option>
+      </select>
+      <label>Identifiant de paiement Stripe <span class=hint>(facultatif, commence par <code>pi_</code>)</span></label>
+      <input name=pi style="width:100%" placeholder="pi_...">
+      <p class=hint>Nécessaire seulement si tu as choisi « a payé » et que tu veux que le remboursement automatique fonctionne en cas d'annulation. Sans lui, la réservation sera marquée remboursée sans qu'aucun argent ne bouge.</p>
+      <div style="margin-top:16px"><button>Ajouter la réservation</button> <a href="/admin/soirees/reservations?id=${so.id}"><button type=button class=sec>Annuler</button></a></div>
+    </form>
+  </div></html>`;
 }
 function backupPage() {
   const fichiers = backupFiles();
@@ -2430,7 +2474,13 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/admin/soirees/delete' && req.method === 'POST') {
       const id = Number(parseForm(await readBody(req)).id);
-      if (id) { db.prepare('DELETE FROM reservations WHERE soiree_id=?').run(id); db.prepare('DELETE FROM soirees WHERE id=?').run(id); }
+      if (id) {
+        // Refus côté serveur : on ne supprime jamais une soirée qui a des réservations vivantes.
+        const vivantes = db.prepare("SELECT COUNT(*) n FROM reservations WHERE soiree_id=? AND status IN ('paid','hold','waiting')").get(id).n;
+        if (vivantes) return send(res, 200, pubMsg('Suppression refusée', `Cette soirée a ${vivantes} réservation(s) vivante(s). Annule-la d'abord depuis l'admin : les inscrits seront prévenus et remboursés. La suppression sera ensuite possible.`));
+        db.prepare('DELETE FROM reservations WHERE soiree_id=?').run(id);
+        db.prepare('DELETE FROM soirees WHERE id=?').run(id);
+      }
       return send(res, 302, '', { Location: '/admin/soirees' });
     }
     if (p === '/admin/soirees/reservations' && req.method === 'GET') {
@@ -2508,6 +2558,26 @@ const server = http.createServer(async (req, res) => {
       return send(res, 302, '', { Location: r ? `/admin/soirees/reservations?id=${r.soiree_id}&done=1` : '/admin/soirees' });
     }
 
+    if (p === '/admin/soirees/resa/ajouter' && req.method === 'GET') {
+      const so = getSoireeById(Number(url.searchParams.get('soiree')));
+      if (!so) return send(res, 302, '', { Location: '/admin/soirees' });
+      return send(res, 200, ajoutResaPage(so, url.searchParams.get('err')));
+    }
+    if (p === '/admin/soirees/resa/ajouter' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      const so = getSoireeById(Number(d.soiree));
+      if (!so) return send(res, 302, '', { Location: '/admin/soirees' });
+      const email = (d.email || '').trim();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return send(res, 200, ajoutResaPage(so, 'Adresse e-mail invalide.'));
+      const st = ['paid', 'hold', 'waiting'].includes(d.statut) ? d.statut : 'hold';
+      const paye = st === 'paid' ? 1 : 0;
+      db.prepare(`INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,status,priority,paid,paid_at,amount,stripe_payment_intent,forced)
+                  VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,1)`)
+        .run(so.id, (d.prenom || '').trim(), (d.nom || '').trim(), email, (d.tel || '').trim(),
+             parseInt(d.annee, 10) || null, (d.genre || '').trim(), (d.recherche || '').trim(),
+             nowIso(), st, paye, paye ? nowIso() : null, priceRappen(so), (d.pi || '').trim() || null);
+      return send(res, 302, '', { Location: `/admin/soirees/reservations?id=${so.id}&done=1` });
+    }
     if (p === '/admin/backup' && req.method === 'GET') return send(res, 200, backupPage());
     if (p === '/admin/backup/fichier' && req.method === 'GET') {
       const nom = String(url.searchParams.get('nom') || '');
