@@ -37,6 +37,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS inscriptions(
   ip TEXT, ua TEXT
 )`);
 
+// Corbeille : toute inscription supprimée depuis l'admin est recopiée ici avant d'être retirée
+// de la liste. La ligne complète est conservée en JSON (colonne donnees), ce qui permet de la
+// restaurer telle quelle même si la table inscriptions gagne de nouvelles colonnes plus tard.
+db.exec(`CREATE TABLE IF NOT EXISTS inscriptions_poubelle(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  supprime_le TEXT NOT NULL,
+  inscription_id INTEGER,
+  prenom TEXT, nom TEXT, email TEXT,
+  donnees TEXT NOT NULL
+)`);
+
 db.exec(`CREATE TABLE IF NOT EXISTS pageviews(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,
@@ -818,7 +829,8 @@ function adminPage(query) {
       <a href="/admin/backup"><button type=button class=sec>💾 Sauvegarder la base</button></a>
       <button form=act formaction=/admin/export>⬇ Exporter la sélection (CSV)</button>
       <a href="/admin/export?all=1${q || fg || fr || fl || ft ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) + '&langue=' + encodeURIComponent(fl) + '&tranche=' + encodeURIComponent(ft) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
-      <button form=act formaction=/admin/delete class=danger onclick="return confirm('Supprimer les inscriptions sélectionnées ?')">🗑 Supprimer la sélection</button>
+      <button form=act formaction=/admin/delete class=danger onclick="return confirm('Mettre les inscriptions sélectionnées à la corbeille ? Elles quittent la liste mais restent récupérables.')">🗑 Supprimer un/des inscrit(s)</button>
+      <a href="/admin/poubelle"><button type=button class=sec>♻ Corbeille${poubelleCount() ? ' (' + poubelleCount() + ')' : ''}</button></a>
     </div>
 
     <div style="margin:6px 0 12px;padding:10px 14px;background:#eaf3f2;border:1px solid var(--line);border-radius:10px;font-size:.92rem">Sélection affichée : <b>${rows.length}</b> personne(s) — <b>${selF}</b> femme(s) · <b>${selH}</b> homme(s)${ft ? ` <span style=\"color:var(--muted)\">(tranche ${esc(ft)} ans · souplesse ±3)</span>` : ''}</div>
@@ -1402,6 +1414,47 @@ function backupPage() {
       <p style="margin:0 0 8px">Range le fichier téléchargé quelque part de sûr, avec la date dans le nom. Si le serveur tombe, si une manipulation efface des données, ou si tu veux simplement dormir tranquille, c'est ce fichier qui te sauve. Fais-le une fois par semaine, et toujours avant un déploiement.</p>
       <p style="margin:0 0 8px"><b>Si plusieurs fichiers apparaissent</b>, télécharge-les tous : <code>-journal</code>, <code>-wal</code> et <code>-shm</code> contiennent des écritures récentes qui ne sont pas encore dans le fichier principal.</p>
       <p style="margin:0;color:#5b6b64;font-size:14px">Le fichier est copié tel quel, sans compactage : les données récemment effacées y restent parfois récupérables. C'est volontaire.</p>
+    </div>
+  </div></html>`;
+}
+function poubelleCount() {
+  try { return db.prepare('SELECT COUNT(*) n FROM inscriptions_poubelle').get().n; } catch { return 0; }
+}
+function poubellePage(msg) {
+  let rows = [];
+  try { rows = db.prepare('SELECT * FROM inscriptions_poubelle ORDER BY id DESC').all(); } catch { rows = []; }
+  const court = (v) => String(v || '').replace('T', ' ').slice(0, 16);
+  const trs = rows.map((r) => {
+    let o = {};
+    try { o = JSON.parse(r.donnees) || {}; } catch { o = {}; }
+    return `<tr>
+      <td><input type=checkbox name=ids value=${r.id}></td>
+      <td>${esc(court(r.supprime_le))}</td>
+      <td>${esc(r.prenom || '')}</td><td>${esc(r.nom || '')}</td><td>${esc(r.email || '')}</td>
+      <td>${esc(String(o.annee || ''))}</td><td>${esc(o.genre || '')}</td><td>${esc(o.recherche || '')}</td>
+      <td>${esc(court(o.created_at))}</td></tr>`;
+  }).join('');
+  return `${pageHead('Corbeille')}
+  <div class=wrap>
+    <a class=back href="/admin">← Retour aux inscriptions</a>
+    <h2>Corbeille</h2>
+    <p>Les inscriptions supprimées depuis l'admin arrivent ici. Elles ne reçoivent plus rien et n'apparaissent plus dans la liste, mais rien n'est perdu : tu peux les remettre dans la liste quand tu veux.</p>
+    ${msg ? `<div class=panel style="margin:12px 0;border-color:#9fc4bd;background:#eaf3f2"><p style="margin:0">${msg}</p></div>` : ''}
+    ${rows.length ? `<form method=post>
+      <div class=bar style="margin:12px 0">
+        <button formaction=/admin/poubelle/restaurer>↩ Remettre dans la liste</button>
+        <button formaction=/admin/poubelle/vider class=danger onclick="return confirm('Effacer définitivement les lignes cochées ? Cette fois, aucun retour possible.')">🗑 Effacer définitivement</button>
+      </div>
+      <table>
+        <tr><th><input type=checkbox onclick="document.querySelectorAll('input[name=ids]').forEach(c=>c.checked=this.checked)"></th>
+        <th>Supprimée le</th><th>Prénom</th><th>Nom</th><th>E-mail</th><th>Année</th><th>Genre</th><th>Recherche</th><th>Inscrite le</th></tr>
+        ${trs}
+      </table>
+    </form>` : '<div class=empty>La corbeille est vide.</div>'}
+    <div class=panel style="margin-top:18px">
+      <p style="margin:0 0 8px"><b>Bon à savoir</b></p>
+      <p style="margin:0 0 8px">Une adresse remise dans la liste retrouve sa date d'inscription d'origine, ses langues et son consentement. Si la même adresse s'est réinscrite entre-temps, la restauration est refusée pour éviter un doublon (et donc deux e-mails à la même personne).</p>
+      <p style="margin:0;color:#5b6b64;font-size:14px">La corbeille ne se vide jamais toute seule. À toi de faire le ménage, ou de ne rien faire : elle ne pèse rien.</p>
     </div>
   </div></html>`;
 }
@@ -2450,8 +2503,55 @@ const server = http.createServer(async (req, res) => {
       let ids = d.ids || [];
       if (!Array.isArray(ids)) ids = [ids];
       ids = ids.map(Number).filter(Boolean);
-      if (ids.length) db.prepare(`DELETE FROM inscriptions WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
+      if (ids.length) {
+        // On recopie chaque fiche dans la corbeille avant de la retirer de la liste.
+        const marque = ids.map(() => '?').join(',');
+        const vieilles = db.prepare(`SELECT * FROM inscriptions WHERE id IN (${marque})`).all(...ids);
+        const arch = db.prepare('INSERT INTO inscriptions_poubelle(supprime_le,inscription_id,prenom,nom,email,donnees) VALUES(?,?,?,?,?,?)');
+        for (const r of vieilles) {
+          try { arch.run(nowIso(), r.id, r.prenom || '', r.nom || '', r.email || '', JSON.stringify(r)); } catch { /* la suppression reste possible */ }
+        }
+        db.prepare(`DELETE FROM inscriptions WHERE id IN (${marque})`).run(...ids);
+      }
       return send(res, 302, '', { Location: '/admin' });
+    }
+
+    // Corbeille des inscriptions
+    if (p === '/admin/poubelle' && req.method === 'GET') return send(res, 200, poubellePage(''));
+    if (p === '/admin/poubelle/restaurer' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      let ids = d.ids || [];
+      if (!Array.isArray(ids)) ids = [ids];
+      ids = ids.map(Number).filter(Boolean);
+      const colonnes = new Set(db.prepare('PRAGMA table_info(inscriptions)').all().map((c) => c.name));
+      let remises = 0, doublons = [];
+      for (const pid of ids) {
+        const row = db.prepare('SELECT * FROM inscriptions_poubelle WHERE id=?').get(pid);
+        if (!row) continue;
+        let o;
+        try { o = JSON.parse(row.donnees); } catch { continue; }
+        if (!o || typeof o !== 'object') continue;
+        const mail = String(o.email || '');
+        if (mail && db.prepare('SELECT id FROM inscriptions WHERE lower(email)=lower(?)').get(mail)) { doublons.push(mail); continue; }
+        // On garde l'ancien identifiant s'il est encore libre, sinon la base en attribue un neuf.
+        const libre = o.id && !db.prepare('SELECT id FROM inscriptions WHERE id=?').get(o.id);
+        const cles = Object.keys(o).filter((k) => colonnes.has(k) && (k !== 'id' || libre));
+        if (!cles.length) continue;
+        db.prepare(`INSERT INTO inscriptions(${cles.join(',')}) VALUES(${cles.map(() => '?').join(',')})`).run(...cles.map((k) => o[k]));
+        db.prepare('DELETE FROM inscriptions_poubelle WHERE id=?').run(pid);
+        remises++;
+      }
+      let msg = remises ? `<b>${remises}</b> inscription(s) remise(s) dans la liste.` : 'Aucune inscription remise.';
+      if (doublons.length) msg += ` Refusées car déjà présentes dans la liste : ${doublons.map(esc).join(', ')}.`;
+      return send(res, 200, poubellePage(msg));
+    }
+    if (p === '/admin/poubelle/vider' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      let ids = d.ids || [];
+      if (!Array.isArray(ids)) ids = [ids];
+      ids = ids.map(Number).filter(Boolean);
+      if (ids.length) db.prepare(`DELETE FROM inscriptions_poubelle WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
+      return send(res, 200, poubellePage(ids.length ? `<b>${ids.length}</b> ligne(s) effacée(s) définitivement.` : 'Rien d\'effacé.'));
     }
 
     // Composer / envoyer un e-mail groupé
