@@ -514,6 +514,10 @@ function resaCSV(rows) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Pause entre deux e-mails d'une campagne. 3 s = ~20 messages/minute : assez lent pour ne pas
+// ressembler à un compte piraté aux yeux d'OVH, assez rapide pour écouler une centaine d'adresses
+// en quelques minutes. Réglable par la variable d'environnement PAUSE_ENVOI_MS.
+const PAUSE_ENVOI_MS = Math.max(0, Number(process.env.PAUSE_ENVOI_MS) || 3000);
 let lastCampaign = null; // { at, total, sent, failed, running, subject }
 
 async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null, soireesForList = null, forceEligible = false, campaignId = null) {
@@ -570,7 +574,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
         } });
       lastCampaign.sent++;
     } catch (e) { lastCampaign.failed++; console.error('Campagne — échec', r.email, e.message); }
-    await sleep(300);
+    await sleep(PAUSE_ENVOI_MS);
   }
   lastCampaign.running = false;
   if (campaignId) { try { db.prepare('UPDATE campaigns SET sent=?, failed=? WHERE id=?').run(lastCampaign.sent, lastCampaign.failed, campaignId); } catch {} }
