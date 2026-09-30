@@ -100,8 +100,16 @@ function sendConfirmation(i) {
   const listeHtml = soirees.length
     ? `<p>Voici les prochaines soirées qui te correspondent — clique pour réserver ta place :</p>` + soirees.map((so) => `<div style="background:#ffffff;border:1px solid #57a893;border-left:4px solid #d0aa54;border-radius:10px;padding:14px 16px;margin:14px 0"><div style="font-weight:700;color:#156b54;font-size:16px">${esc(so.date_texte || so.code)}</div><div style="color:#5b6b64;font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so))}${so.lieu ? ' · ' + esc(so.lieu) : ''}</div><a href="${resaLinkSoiree(i.email, so.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:22px;font-weight:600;font-size:14px">Réserver ma place</a></div>`).join('')
     : `<p>Aucune date n'est encore ouverte pour ton profil — on te préviendra par e-mail dès qu'une soirée qui te correspond est fixée.</p>`;
-  const meca = "Comment ça marche : tu t'inscris à une soirée gratuitement, rien n'est débité. Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place. Chaque soirée est confirmée ou annulée le samedi qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde. Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.";
-  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Merci ! Ton inscription à la <b>Soirée Match</b> est bien enregistrée.</p>${listeHtml}<p style="color:#5b6b64;font-size:14px">${meca}</p><p style="margin-top:18px">À très vite,<br><b>L'équipe Soirée Match</b></p>`;
+  // Découpé en paragraphes : un seul pavé est illisible dans une boîte mail.
+  const MECA = [
+    "Comment ça marche : tu t'inscris à une soirée gratuitement, rien n'est débité.",
+    "Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place.",
+    "Chaque soirée est confirmée ou annulée le samedi qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.",
+    "Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.",
+  ];
+  const meca = MECA.join('\n\n');
+  const mecaHtml = MECA.map((x) => `<p style="color:#5b6b64;font-size:14px">${esc(x)}</p>`).join('');
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Merci ! Ton inscription à la <b>Soirée Match</b> est bien enregistrée.</p>${listeHtml}${mecaHtml}<p style="margin-top:18px">À très vite,<br><b>L'équipe Soirée Match</b></p>`;
   transporter.sendMail({
     from: MAIL_FROM, to: i.email,
     subject: 'Ton inscription à la Soirée Match est confirmée',
@@ -527,11 +535,16 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const aucune = (!eligibles.length && pourSonProfil.length)
       ? "Tu es déjà inscrit(e) à toutes les dates ouvertes pour ton profil — rien à faire de ton côté, on se voit sur place."
       : "Aucune date ne correspond à ton profil pour le moment — on t'écrit dès qu'une nouvelle soirée s'ouvre pour toi.";
+    // Une date hors du profil du destinataire (mode « toutes les dates ») est affichée
+    // à titre d'information : pas de bouton, mais la raison — sinon on propose un clic qui ne réserve rien.
+    const pourLui = (so2) => { try { return eligibleForSoiree(r, so2); } catch { return false; } };
     const sT = eligibles.length
-      ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${soireeMetaShort(so2) ? ' · ' + soireeMetaShort(so2) : ''}${so2.lieu ? '\n  ' + so2.lieu : ''}\n  Réserver : ${resaLinkSoiree(r.email, so2.code)}`).join('\n\n')
+      ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${soireeMetaShort(so2) ? ' · ' + soireeMetaShort(so2) : ''}${so2.lieu ? '\n  ' + so2.lieu : ''}\n  ${pourLui(so2) ? `Réserver : ${resaLinkSoiree(r.email, so2.code)}` : `(${soireeAudience(so2)} — pas ton profil)`}`).join('\n\n')
       : aucune;
     const sH = eligibles.length
-      ? eligibles.map((so2) => `<div style="background:#ffffff;border:1px solid #57a893;border-left:4px solid #d0aa54;border-radius:10px;padding:14px 16px;margin:14px 0"><div style="font-weight:700;color:#156b54;font-size:16px">${esc(so2.date_texte || so2.code)}</div><div style="color:#5b6b64;font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so2))}${so2.lieu ? ' · ' + esc(so2.lieu) : ''}</div><a href="${resaLinkSoiree(r.email, so2.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:22px;font-weight:600;font-size:14px">Réserver ma place</a></div>`).join('')
+      ? eligibles.map((so2) => `<div style="background:#ffffff;border:1px solid ${pourLui(so2) ? '#57a893' : '#dbe5e1'};border-left:4px solid ${pourLui(so2) ? '#d0aa54' : '#c8d8d2'};border-radius:10px;padding:14px 16px;margin:14px 0"><div style="font-weight:700;color:${pourLui(so2) ? '#156b54' : '#7b8a83'};font-size:16px">${esc(so2.date_texte || so2.code)}</div><div style="color:#5b6b64;font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so2))}${so2.lieu ? ' · ' + esc(so2.lieu) : ''}</div>${pourLui(so2)
+          ? `<a href="${resaLinkSoiree(r.email, so2.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:22px;font-weight:600;font-size:14px">Réserver ma place</a>`
+          : `<div style="color:#8a9a99;font-size:13px;font-style:italic">${esc(soireeAudience(so2))} — ce n'est pas ton profil, mais on t'annonce la date.</div>`}</div>`).join('')
       : `<div style="margin:12px 0;color:#8a9a99">${esc(aucune)}</div>`;
     const dateR = eligibles.length ? eligibles.map((x) => x.date_texte || x.code).join(' ou le ') : dateTxt;
     const opp = r.genre === 'Homme' ? 'femmes déjà inscrites' : (r.genre === 'Femme' ? 'hommes déjà inscrits' : 'femmes et hommes déjà inscrits');
@@ -1065,6 +1078,33 @@ Ta team Soirée Match`;
 
 const TEMPLATES = [
   {
+    name: 'Email général',
+    subject: 'De nouvelles dates en octobre — et un changement dans les inscriptions',
+    body: `Bonjour {prenom},
+
+Nous avons ajouté des soirées en octobre et nous souhaitions t'en faire part. Avec de nouvelles tranches d'âge, pour satisfaire tous ceux qui nous ont écrit à ce sujet.
+
+Nous n'avons cependant pas encore assez d'inscrits pour organiser une soirée gay ou lesbienne.
+
+Voici les prochaines dates, non spécifiques à ta tranche d'âge :
+
+{soirees}
+
+Attention ! Nous avons changé le mode d'inscription.
+
+Comment ça se passe : tu t'inscris en un clic, gratuitement — rien n'est débité à ce moment-là.
+
+Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place.
+
+Chaque soirée est confirmée ou annulée le samedi qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
+
+Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.
+
+Une question ou un souci technique ? Écris-nous à contact@soireematch.com — et ajoute cette adresse à tes contacts pour être sûr(e) de ne rien manquer.
+
+L'équipe Soirée Match`,
+  },
+  {
     name: 'Prochaines soirées (référence)',
     subject: 'La prochaine Soirée Match approche — viens tenter ta chance',
     body: `Bonjour {prenom},
@@ -1172,6 +1212,8 @@ function composePage() {
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=auto checked> Envoyer uniquement aux personnes concernées par les soirées cochées (âge ±3, sexe, orientation)</label>
       <p class=hint>Ce filtre <b>s'ajoute</b> aux réglages « À qui ? » ci-dessus : si tu choisis Genre = Homme, seuls les hommes concernés recevront l'e-mail. Les personnes <b>déjà inscrites</b> à ces soirées (payées, en attente de paiement ou en liste d'attente) sont automatiquement écartées.</p>
       <p class=hint>Dans tous les cas, la balise <code>{soirees}</code> ne propose jamais à quelqu'un une soirée qu'il a déjà réservée.</p>
+      <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=force> Afficher <b>toutes</b> les dates dans <code>{soirees}</code>, même hors du profil du destinataire</label>
+      <p class=hint>Sans cette case, chacun ne voit que les soirées de sa tranche d'âge et de son orientation. Avec, tout le monde voit le programme complet — utile pour annoncer de nouvelles dates. ⚠ Le bouton « Réserver ma place » d'une date hors profil ne réservera pas : la personne sera redirigée vers ses propres dates.</p>
 
       <label>Objet</label>
       <input id=subject name=subject required style="width:100%" placeholder="Ex. La prochaine Soirée Match approche !">
@@ -2438,7 +2480,8 @@ const server = http.createServer(async (req, res) => {
         .run(nowIso(), subject, body, tpl, selected.map((x) => x.code).join(', '), [...new Set(selected.map((x) => x.tranche).filter(Boolean))].join(', '), recips.length, emails, genres);
       // En arrière-plan (non bloquant), puis copie d'archive dans la boîte contact@.
       // La copie part APRÈS : runCampaign partage un compteur global, deux envois simultanés fausseraient les décomptes.
-      runCampaign(recips, subject, body, linkUrl, so, selected, false, Number(camp.lastInsertRowid))
+      const toutesDates = (d.force === 'on' || d.force === '1');
+      runCampaign(recips, subject, body, linkUrl, so, selected, toutesDates, Number(camp.lastInsertRowid))
         .then(() => { if (ARCHIVE_TO) return runCampaign([{ prenom: 'Marc', email: ARCHIVE_TO, genre: '', recherche: '', annee: 0, langues: '' }], '[COPIE] ' + subject, body, linkUrl, so, selected, true); })
         .catch(() => {});
       return send(res, 302, '', { Location: '/admin' });
