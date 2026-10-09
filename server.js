@@ -115,7 +115,7 @@ function sendConfirmation(i) {
   const MECA = [
     "Comment ça marche : tu t'inscris à une soirée gratuitement, rien n'est débité.",
     "Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place.",
-    "Chaque soirée est confirmée ou annulée le samedi qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.",
+    "Chaque soirée est confirmée ou annulée le dimanche qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.",
     "Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.",
   ];
   const meca = MECA.join('\n\n');
@@ -288,7 +288,7 @@ try { db.exec('ALTER TABLE soirees ADD COLUMN reconcile_done INTEGER DEFAULT 0')
 try { db.exec('ALTER TABLE soirees ADD COLUMN saturday_sent INTEGER DEFAULT 0'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE soirees ADD COLUMN confirm_sent INTEGER DEFAULT 0'); } catch { /* déjà là */ }
 // Mode de paiement : 'inscription' (on paie en réservant) ou 'differe' (gratuit, on paie après
-// la confirmation du samedi). Les soirées existantes passent en différé — choix de Marc, 20 sept 2026.
+// la confirmation du dimanche). Les soirées existantes passent en différé — choix de Marc, 20 sept 2026.
 try { db.exec('ALTER TABLE soirees ADD COLUMN paiement TEXT'); } catch { /* déjà là */ }
 try { db.exec("UPDATE soirees SET paiement='differe' WHERE paiement IS NULL OR paiement=''"); } catch { /* rien */ }
 try { db.exec('ALTER TABLE reservations ADD COLUMN status TEXT'); } catch { /* déjà là */ }
@@ -395,7 +395,7 @@ async function startReservation(res, so, person) {
   const hold = db.prepare("SELECT * FROM reservations WHERE soiree_id=? AND lower(email)=lower(?) AND status='hold' AND (hold_expires IS NULL OR hold_expires>?)").get(so.id, email, nowIso());
   if (hold) {
     if (!PAY_ON) { markPaidAndConfirm(hold); return send(res, 200, soireeOkPage(so)); }
-    // hold_expires vide = inscription gratuite en attente de la confirmation du samedi
+    // hold_expires vide = inscription gratuite en attente de la confirmation du dimanche
     if (!hold.hold_expires) return send(res, 200, inscritOkPage(so));
     try { return send(res, 302, '', { Location: await createCheckout(hold.id, so, email) }); }
     catch (e) { return send(res, 200, pubMsg('Paiement momentanément indisponible', 'Réessaie dans un instant.')); }
@@ -420,7 +420,7 @@ async function startReservation(res, so, person) {
     return send(res, 200, soireeOkPage(so));
   }
   // Paiement différé : l'inscription est gratuite. La place est tenue sans échéance
-  // jusqu'à la confirmation du samedi, qui envoie le lien de paiement.
+  // jusqu'à la confirmation du dimanche, qui envoie le lien de paiement.
   if (isDeferred(so)) {
     db.prepare("INSERT INTO reservations(soiree_id,prenom,nom,email,tel,annee,genre,recherche,created_at,status,hold_expires,priority,paid) VALUES(?,?,?,?,?,?,?,?,?,'hold',NULL,0,0)")
       .run(so.id, person.prenom, person.nom, email, person.tel, person.annee, genre, person.recherche, nowIso());
@@ -513,8 +513,8 @@ function sendInscriptionMail(so, i) {
   const prenom = (i.prenom || '').trim() || 'à toi';
   const quand = so.date_texte ? ` du ${so.date_texte}` : '';
   const sujet = `Ton inscription à la Soirée Match${so.date_texte ? ` — ${so.date_texte}` : ''} est enregistrée`;
-  const txt = `Bonjour ${prenom},\n\nTon inscription à la Soirée Match${quand} est enregistrée. Rien n'est débité pour l'instant.${so.lieu ? `\n\nLieu : ${so.lieu}` : ''}${so.prix ? `\nEntrée : ${so.prix}` : ''}\n\nComment ça se passe : nous confirmons la soirée le samedi qui précède, quand nous savons si le groupe est complet et équilibré. Tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras jusqu'au lundi soir pour le faire. Si la soirée n'a pas lieu, tu n'auras rien payé.\n\nUn petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !\n\nOn a hâte de te voir. À très vite !\nTa team Soirée Match`;
-  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Ton inscription à la <b>Soirée Match${esc(quand)}</b> est enregistrée. <b>Rien n'est débité pour l'instant.</b></p>${so.lieu ? `<p>Lieu : ${esc(so.lieu)}${so.prix ? `<br>Entrée : ${esc(so.prix)}` : ''}</p>` : (so.prix ? `<p>Entrée : ${esc(so.prix)}</p>` : '')}<p>Comment ça se passe : nous confirmons la soirée <b>le samedi qui précède</b>, quand nous savons si le groupe est complet et équilibré. Tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras <b>jusqu'au lundi soir</b> pour le faire. Si la soirée n'a pas lieu, tu n'auras rien payé.</p><p>Un petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !</p><p>On a hâte de te voir. À très vite !<br>Ta team Soirée Match</p>`;
+  const txt = `Bonjour ${prenom},\n\nTon inscription à la Soirée Match${quand} est enregistrée. Rien n'est débité pour l'instant.${so.lieu ? `\n\nLieu : ${so.lieu}` : ''}${so.prix ? `\nEntrée : ${so.prix}` : ''}\n\nComment ça se passe : nous confirmons la soirée le dimanche qui précède, quand nous savons si le groupe est complet et équilibré. Tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras 24 heures pour le faire. Si la soirée n'a pas lieu, tu n'auras rien payé.\n\nUn petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !\n\nOn a hâte de te voir. À très vite !\nTa team Soirée Match`;
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Ton inscription à la <b>Soirée Match${esc(quand)}</b> est enregistrée. <b>Rien n'est débité pour l'instant.</b></p>${so.lieu ? `<p>Lieu : ${esc(so.lieu)}${so.prix ? `<br>Entrée : ${esc(so.prix)}` : ''}</p>` : (so.prix ? `<p>Entrée : ${esc(so.prix)}</p>` : '')}<p>Comment ça se passe : nous confirmons la soirée <b>le dimanche qui précède</b>, quand nous savons si le groupe est complet et équilibré. Tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras <b>24 heures</b> pour le faire. Si la soirée n'a pas lieu, tu n'auras rien payé.</p><p>Un petit mot qui compte : la salle nous est offerte par le bar en échange de nos consommations. Sans cela, le prix d'entrée serait bien plus élevé — alors joue le jeu en consommant sur place tout au long de la soirée. Merci d'avance : c'est grâce à ça que la soirée est possible !</p><p>On a hâte de te voir. À très vite !<br>Ta team Soirée Match</p>`;
   transporter.sendMail({ from: MAIL_FROM, to: i.email, subject: sujet, text: txt, html: emailShell(inner, unsubLink(i.email)) }).catch((e) => console.error('Mail inscription échoué:', e.message));
   if (NOTIFY_TO) transporter.sendMail({ from: MAIL_FROM, to: NOTIFY_TO, subject: `Inscription « ${so.code} » : ${i.prenom || ''} ${i.nom || ''}`, text: `Nouvelle inscription (gratuite, paiement différé) pour ${so.code} (${so.date_texte || ''})\n${i.prenom || ''} ${i.nom || ''} — ${i.email || ''}` }).catch(() => {});
 }
@@ -565,15 +565,21 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const opp = r.genre === 'Homme' ? 'femmes déjà inscrites' : (r.genre === 'Femme' ? 'hommes déjà inscrits' : 'femmes et hommes déjà inscrits');
     // {sexe_oppose} = le groupe déjà inscrit (pluriel) · {sexe_oppose_sing} = la personne recherchée (singulier, article compris)
     const oppS = r.genre === 'Homme' ? 'la femme' : (r.genre === 'Femme' ? "l'homme" : 'la personne');
+    // Pronoms du groupe d'en face : une femme lit « eux » / « ils », un homme lit « elles » / « elles ».
+    const eux = r.genre === 'Homme' ? 'elles' : 'eux';
+    const ils = r.genre === 'Homme' ? 'elles' : 'ils';
     const lieuR = eligibles.length ? (eligibles[0].lieu || '') : lieuTxt;
-    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque\}/gi, manqueTxt).replace(/\{sexe_oppose_sing\}/gi, oppS).replace(/\{sexe_oppose\}/gi, opp).replace(/\{soirees\}/gi, sT);
+    // {manque} = ce qui manque dans le sexe du destinataire (c'est la seule place qu'il peut combler) ;
+    // s'il ne manque personne de son côté, on retombe sur le manque global. {manque_total} = toujours le global.
+    const manqueR = (so && deficitSexeTxt(so, r.genre)) || manqueTxt;
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque_total\}/gi, manqueTxt).replace(/\{manque\}/gi, manqueR).replace(/\{sexe_oppose_sing\}/gi, oppS).replace(/\{sexe_oppose\}/gi, opp).replace(/\{eux_elles\}/gi, eux).replace(/\{ils_elles\}/gi, ils).replace(/\{soirees\}/gi, sT);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
     const btn = `<a href="${resa}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réserve ma place</a>`;
     const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
-      .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque\}/gi, esc(manqueTxt)).replace(/\{sexe_oppose_sing\}/gi, esc(oppS)).replace(/\{sexe_oppose\}/gi, esc(opp))
+      .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque_total\}/gi, esc(manqueTxt)).replace(/\{manque\}/gi, esc(manqueR)).replace(/\{sexe_oppose_sing\}/gi, esc(oppS)).replace(/\{sexe_oppose\}/gi, esc(opp)).replace(/\{eux_elles\}/gi, eux).replace(/\{ils_elles\}/gi, ils)
       .replace(/\{soirees\}/gi, sH)
       .replace(/\n/g, '<br>');
     const html = emailShell(htmlBody, unsub);
@@ -883,7 +889,7 @@ function soireePage(so, err) {
       ${so.lieu ? `<div><b>${esc(so.lieu)}</b><span>Où</span></div>` : ''}
       ${so.prix ? `<div><b>${esc(so.prix)}</b><span>Entrée</span></div>` : ''}
     </div>
-    <p class=muted style="font-size:.92rem;margin-top:6px">📅 La soirée est confirmée ou annulée le <b>samedi qui précède</b> — inscris-toi avant, c'est ce qui décide si elle a lieu&nbsp;!</p>
+    <p class=muted style="font-size:.92rem;margin-top:6px">📅 La soirée est confirmée ou annulée le <b>dimanche qui précède</b> — inscris-toi avant, c'est ce qui décide si elle a lieu&nbsp;!</p>
     ${isDeferred(so) ? `<p class=muted style="font-size:.92rem;margin-top:6px">💛 <b>L'inscription est gratuite</b> : rien n'est débité maintenant. Tu ne règles ta place que si la soirée est confirmée — et tu auras alors 24 heures pour le faire.</p>` : ''}
     ${err ? `<p style="color:#c0392b">${esc(err)}</p>` : ''}
     <form method=post action="/soiree/${esc(so.code)}">
@@ -901,7 +907,7 @@ function soireePage(so, err) {
   </div></html>`;
 }
 function inscritOkPage(so) {
-  return `${siteHead('Inscription enregistrée')}<div class=box><h1>C'est noté ✓</h1><p>Ton inscription à la Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''} est enregistrée. <b>Rien n'est débité pour l'instant.</b></p><p>Nous confirmons la soirée le samedi qui précède, quand nous savons si le groupe est complet et équilibré. Tu recevras alors un e-mail avec un lien pour régler ta place${so.prix ? ` (${esc(so.prix)})` : ''}. Si la soirée n'a pas lieu, tu n'auras rien payé.</p><p>Tu reçois tout de suite un e-mail qui récapitule tout ça. À très vite&nbsp;! 💛</p></div></html>`;
+  return `${siteHead('Inscription enregistrée')}<div class=box><h1>C'est noté ✓</h1><p>Ton inscription à la Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''} est enregistrée. <b>Rien n'est débité pour l'instant.</b></p><p>Nous confirmons la soirée le dimanche qui précède, quand nous savons si le groupe est complet et équilibré. Tu recevras alors un e-mail avec un lien pour régler ta place${so.prix ? ` (${esc(so.prix)})` : ''}. Si la soirée n'a pas lieu, tu n'auras rien payé.</p><p>Tu reçois tout de suite un e-mail qui récapitule tout ça. À très vite&nbsp;! 💛</p></div></html>`;
 }
 function soireeOkPage(so) {
   return `${siteHead('Réservation confirmée')}<div class=box><h1>C'est réservé ✓</h1><p>Ta place pour la Soirée Match${so.date_texte ? ` du ${esc(so.date_texte)}` : ''} est bien enregistrée. Tu vas recevoir un e-mail de confirmation. On a hâte de te voir&nbsp;! 💛</p></div></html>`;
@@ -943,7 +949,7 @@ function confirmSoireePage(person, so) {
       ${so.prix ? `<div><b>${esc(so.prix)}</b><span>Entrée</span></div>` : ''}
     </div>
     <p class=muted>${isDeferred(so)
-      ? "Ton inscription est gratuite : rien n'est débité maintenant. Nous confirmons la soirée le samedi qui précède, et tu recevras alors un lien pour régler ta place."
+      ? "Ton inscription est gratuite : rien n'est débité maintenant. Nous confirmons la soirée le dimanche qui précède, et tu recevras alors un lien pour régler ta place."
       : "Clique ci-dessous pour réserver et régler ta place."}</p>
     <form method=post action=/reserver/confirm>
       <input type=hidden name=e value="${esc(person.email)}">
@@ -983,8 +989,8 @@ function soireesPage() {
       </div>
       <p class=hint>Hétéro : parité stricte, min/sexe puis max/sexe. Gay : capacité totale, sans parité.</p>
       <label>Paiement</label>
-      <select name=paiement style="width:100%"><option value="differe">Différé — inscription gratuite, on paie après la confirmation du samedi</option><option value="inscription">À l'inscription — on paie en réservant sa place</option></select>
-      <p class=hint>En différé, l'inscrit ne paie rien tant que la soirée n'est pas confirmée. Le lien de paiement part avec le « Confirmer &amp; prévenir » du samedi, et chacun a 24 heures pour régler sa place.</p>
+      <select name=paiement style="width:100%"><option value="differe">Différé — inscription gratuite, on paie après la confirmation du dimanche</option><option value="inscription">À l'inscription — on paie en réservant sa place</option></select>
+      <p class=hint>En différé, l'inscrit ne paie rien tant que la soirée n'est pas confirmée. Le lien de paiement part avec le « Confirmer &amp; prévenir » du dimanche, et chacun a 24 heures pour régler sa place.</p>
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif checked style="width:auto"> Active (réservations ouvertes)</label>
       <div style="margin-top:14px"><button>Créer la soirée</button></div>
     </form>
@@ -1012,8 +1018,8 @@ function soireeEditPage(s) {
         <span style="flex:1;min-width:110px"><label>Capacité (gay)</label><input name=cap_total type=number value="${capTotal(s)}" style="width:100%"></span>
       </div>
       <label>Paiement</label>
-      <select name=paiement style="width:100%"><option value="differe"${payMode(s) === 'differe' ? ' selected' : ''}>Différé — inscription gratuite, on paie après la confirmation du samedi</option><option value="inscription"${payMode(s) === 'inscription' ? ' selected' : ''}>À l'inscription — on paie en réservant sa place</option></select>
-      <p class=hint>Modifiable à tout moment. Si tu repasses en « à l'inscription », les personnes déjà inscrites gratuitement le restent et recevront leur lien de paiement le samedi ; seuls les inscrits suivants paieront tout de suite.</p>
+      <select name=paiement style="width:100%"><option value="differe"${payMode(s) === 'differe' ? ' selected' : ''}>Différé — inscription gratuite, on paie après la confirmation du dimanche</option><option value="inscription"${payMode(s) === 'inscription' ? ' selected' : ''}>À l'inscription — on paie en réservant sa place</option></select>
+      <p class=hint>Modifiable à tout moment. Si tu repasses en « à l'inscription », les personnes déjà inscrites gratuitement le restent et recevront leur lien de paiement le dimanche ; seuls les inscrits suivants paieront tout de suite.</p>
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type=checkbox name=actif ${s.actif ? 'checked' : ''} style="width:auto"> Active</label>
       <div style="margin-top:14px"><button>Enregistrer</button> <a href="/admin/soirees"><button type=button class=sec>Annuler</button></a></div>
     </form>
@@ -1042,7 +1048,7 @@ function reservationsPage(s, done) {
   const cnt = (st, g) => list.filter((r) => r.status === st && (!g || r.genre === g)).length;
   const par = isParity(s);
   const lbl = { paid: '✅ payé', hold: '⏳ à confirmer (3h)', waiting: "🕒 liste d'attente", refunded: '↩ remboursé', expired: '✕ expiré', cancelled: '✕ annulé' };
-  // En paiement différé, un « hold » sans échéance est une inscription gratuite en attente du samedi.
+  // En paiement différé, un « hold » sans échéance est une inscription gratuite en attente du dimanche.
   const lblOf = (r) => (r.status === 'hold'
     ? (r.hold_expires ? `⏳ à régler avant le ${echeanceTxt(r.hold_expires)}` : '📝 inscrit — pas encore payé')
     : (lbl[r.status] || esc(r.status || '')));
@@ -1112,7 +1118,7 @@ Comment ça se passe : tu t'inscris en un clic, gratuitement — rien n'est déb
 
 Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place.
 
-Chaque soirée est confirmée ou annulée le samedi qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
+Chaque soirée est confirmée ou annulée le dimanche qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
 
 Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.
 
@@ -1139,7 +1145,7 @@ Comment ça se passe : tu t'inscris en un clic, gratuitement — rien n'est déb
 
 Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place.
 
-Chaque soirée est confirmée ou annulée le samedi qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
+Chaque soirée est confirmée ou annulée le dimanche qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
 
 Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.
 
@@ -1149,7 +1155,7 @@ On a hâte de t'y voir,
 L'équipe Soirée Match`,
   },
   {
-    name: 'Rappel — date limite d\'inscription (samedi)',
+    name: 'Rappel — date limite d\'inscription (dimanche)',
     subject: 'Il ne reste que quelques jours pour t\'inscrire',
     body: `Bonjour {prenom},
 
@@ -1159,7 +1165,7 @@ Ta prochaine soirée pour rencontrer {sexe_oppose_sing} de tes rêves :
 
 Inscris-toi !
 
-Chaque Soirée Match se décide au plus tard le samedi qui précède — c'est la date limite pour t'inscrire et faire en sorte qu'elle ait lieu. Après, il sera peut-être trop tard, et s'il n'y a pas assez d'inscrits, nous devrons annuler la soirée.
+Chaque Soirée Match se décide au plus tard le dimanche qui précède — c'est la date limite pour t'inscrire et faire en sorte qu'elle ait lieu. Après, il sera peut-être trop tard, et s'il n'y a pas assez d'inscrits, nous devrons annuler la soirée.
 
 Les {sexe_oppose} comptent sur ton engagement.
 
@@ -1167,25 +1173,77 @@ Bonne semaine,
 L'équipe Soirée Match`,
   },
   {
-    name: 'Relance — il manque des inscrits',
-    subject: 'Il reste des places pour nos prochaines soirées',
+    name: 'Relance 1 — le sauvetage',
+    subject: 'Il nous manque encore {manque} pour mardi',
     body: `Bonjour {prenom},
 
-Nos prochaines soirées approchent, et il nous manque encore {manque} pour garantir une belle parité et une soirée réussie.
+C'est bientôt mardi, et il nous manque encore {manque} pour garantir une belle parité et une soirée réussie.
 
-Si tu hésitais, c'est le moment idéal — et si quelqu'un autour de toi pourrait aimer, transmets-lui ce message : nos plus belles soirées naissent du bouche-à-oreille.
+Les {sexe_oppose} attendent ta décision avec impatience. Il te suffit d'un clic pour leur éviter une soirée à parler entre {eux_elles} de la pluie et du beau temps.
 
-Voici les dates qui te concernent :
+Si tu hésitais, c'est le dernier moment.
+
+Voici le lien pour t'inscrire :
 
 {soirees}
 
-L'inscription est gratuite et ne t'engage à rien.
+L'inscription est gratuite et ne t'engage à rien : dès que la soirée sera confirmée, tu recevras un lien pour payer.
 
-Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place.
+Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire. Tu as alors 12h pour confirmer ta place.
 
-Chaque soirée est confirmée ou annulée le samedi qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
+Dès la soirée confirmée, tu as 24h pour payer, sinon ta place est annulée et quelqu'un d'autre peut s'inscrire.
 
-Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.
+Une question ? Écris-nous à contact@soireematch.com — et ajoute cette adresse à tes contacts pour ne rien manquer.
+
+On a hâte de t'y voir,
+L'équipe Soirée Match`,
+  },
+  {
+    name: 'Relance 2 — le chat',
+    subject: 'Ton chat ne t\'écrira jamais ça',
+    body: `Bonjour {prenom},
+
+Mardi approche, et il nous manque encore {manque} pour que la soirée ait lieu.
+
+On sait : ton canapé est confortable, ton chat est de bonne compagnie et la série n'est pas finie. Mais ton chat ne t'écrira jamais : « J'ai aimé te rencontrer hier soir et j'ai hâte de te revoir. »
+
+{ils_elles} n'attendent que toi.
+
+Voici le lien pour t'inscrire :
+
+{soirees}
+
+L'inscription est gratuite et ne t'engage à rien : dès que la soirée sera confirmée, tu recevras un lien pour payer.
+
+Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire. Tu as alors 12h pour confirmer ta place.
+
+Dès la soirée confirmée, tu as 24h pour payer, sinon ta place est annulée et quelqu'un d'autre peut s'inscrire.
+
+Une question ? Écris-nous à contact@soireematch.com — et ajoute cette adresse à tes contacts pour ne rien manquer.
+
+On a hâte de t'y voir,
+L'équipe Soirée Match`,
+  },
+  {
+    name: 'Relance 3 — le compte à rebours',
+    subject: 'J-3 : il manque {manque}',
+    body: `Bonjour {prenom},
+
+État des lieux à J-3 : {manque} manquent encore pour que la soirée de mardi soit validée.
+
+C'est le genre de situation où une seule personne change tout — et là, cette personne, c'est toi. Pas de pression, mais un peu quand même.
+
+Les {sexe_oppose} comptent sur toi.
+
+Voici le lien pour t'inscrire :
+
+{soirees}
+
+L'inscription est gratuite et ne t'engage à rien : dès que la soirée sera confirmée, tu recevras un lien pour payer.
+
+Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire. Tu as alors 12h pour confirmer ta place.
+
+Dès la soirée confirmée, tu as 24h pour payer, sinon ta place est annulée et quelqu'un d'autre peut s'inscrire.
 
 Une question ? Écris-nous à contact@soireematch.com — et ajoute cette adresse à tes contacts pour ne rien manquer.
 
@@ -1228,6 +1286,7 @@ function composePage() {
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=auto checked> Envoyer uniquement aux personnes concernées par les soirées cochées (âge ±3, sexe, orientation)</label>
       <p class=hint>Ce filtre <b>s'ajoute</b> aux réglages « À qui ? » ci-dessus : si tu choisis Genre = Homme, seuls les hommes concernés recevront l'e-mail. Les personnes <b>déjà inscrites</b> à ces soirées (payées, en attente de paiement ou en liste d'attente) sont automatiquement écartées.</p>
       <p class=hint>Dans tous les cas, la balise <code>{soirees}</code> ne propose jamais à quelqu'un une soirée qu'il a déjà réservée.</p>
+      <p class=hint>Balises de relance (une seule soirée cochée) : <code>{manque}</code> = ce qui manque <b>dans le sexe du destinataire</b> (« 4 femmes » pour une femme, « 2 hommes » pour un homme) ; <code>{manque_total}</code> = tout ce qui manque (« 4 femmes et 2 hommes ») ; <code>{sexe_oppose}</code> = « hommes déjà inscrits » / « femmes déjà inscrites » ; <code>{sexe_oppose_sing}</code> = « l'homme » / « la femme » ; <code>{eux_elles}</code> et <code>{ils_elles}</code> = pronoms du groupe d'en face (une femme lit « eux » / « ils », un homme lit « elles »).</p>
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=force> Afficher <b>toutes</b> les dates dans <code>{soirees}</code>, même hors du profil du destinataire</label>
       <p class=hint>Sans cette case, chacun ne voit que les soirées de sa tranche d'âge et de son orientation. Avec, tout le monde voit le programme complet — utile pour annoncer de nouvelles dates. ⚠ Le bouton « Réserver ma place » d'une date hors profil ne réservera pas : la personne sera redirigée vers ses propres dates.</p>
 
@@ -1557,6 +1616,13 @@ function isViable(so) {
   return isParity(so)
     ? (engagedCount(so, 'Femme') >= minSexe(so) && engagedCount(so, 'Homme') >= minSexe(so))
     : (engagedCount(so, null) >= minTotal(so));
+}
+// Manque pour un seul sexe (« 3 femmes »), vide s'il n'en manque pas. Sert à {manque}, personnalisé par destinataire.
+function deficitSexeTxt(so, genre) {
+  if (!isParity(so) || (genre !== 'Homme' && genre !== 'Femme')) return '';
+  const m = Math.max(0, minSexe(so) - engagedCount(so, genre));
+  if (!m) return '';
+  return m + ' ' + (genre === 'Femme' ? (m > 1 ? 'femmes' : 'femme') : (m > 1 ? 'hommes' : 'homme'));
 }
 function deficitTxt(so) {
   if (isParity(so)) {
@@ -1908,8 +1974,8 @@ const eventStartMs = (so) => (so.date_start ? new Date(so.date_start).getTime() 
 function decisionSaturdayMs(so) {
   const st = eventStartMs(so); if (!Number.isFinite(st)) return NaN;
   const d = new Date(st);
-  let off = ((d.getUTCDay() - 6) + 7) % 7; if (off === 0) off = 7;   // 6 = samedi
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - off, 9, 0, 0);   // samedi 09h
+  let off = ((d.getUTCDay() - 0) + 7) % 7; if (off === 0) off = 7;   // 0 = dimanche
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - off, 8, 0, 0);   // dimanche 08h UTC (10h en été, 9h en hiver)
 }
 const payMode = (so) => (so && so.paiement === 'inscription' ? 'inscription' : 'differe');
 // Paiement différé actif : seulement quand Stripe est branché (sinon tout est gratuit de toute façon).
@@ -1958,7 +2024,7 @@ function mailWaitlist(so, i) {
   const prenom = (i.prenom || '').trim() || 'à toi';
   transporter.sendMail({ from: MAIL_FROM, to: i.email,
     subject: `Tu es sur la liste d'attente — Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''}`,
-    text: `Bonjour ${prenom},\n\nMerci de ton intérêt pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nPour garantir une parité parfaite hommes/femmes, les places de ton profil sont complètes pour le moment. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.\n\n${isDeferred(so) ? "Dès qu'une place se libère pour toi, tu reçois un e-mail : ton inscription est alors enregistrée. Rien n'est débité tant que la soirée n'est pas confirmée — nous le faisons le samedi qui précède." : "Dès qu'une place se libère pour toi, tu reçois un e-mail avec un lien pour la confirmer — tu auras alors 3 heures pour la régler avant qu'elle ne passe à la personne suivante. Rien n'est débité tant que ta place n'est pas garantie."}\n\nOn croise les doigts pour toi\nTa team Soirée Match` }).catch(() => {});
+    text: `Bonjour ${prenom},\n\nMerci de ton intérêt pour la Soirée Match${so.date_texte ? ` du ${so.date_texte}` : ''} !\n\nPour garantir une parité parfaite hommes/femmes, les places de ton profil sont complètes pour le moment. Tu es inscrit(e) sur la liste d'attente, dans ton ordre d'arrivée.\n\n${isDeferred(so) ? "Dès qu'une place se libère pour toi, tu reçois un e-mail : ton inscription est alors enregistrée. Rien n'est débité tant que la soirée n'est pas confirmée — nous le faisons le dimanche qui précède." : "Dès qu'une place se libère pour toi, tu reçois un e-mail avec un lien pour la confirmer — tu auras alors 3 heures pour la régler avant qu'elle ne passe à la personne suivante. Rien n'est débité tant que ta place n'est pas garantie."}\n\nOn croise les doigts pour toi\nTa team Soirée Match` }).catch(() => {});
 }
 function mailSlotOpen(so, r) {
   if (!transporter) return;
@@ -1978,8 +2044,8 @@ function mailSlotOpenFree(so, r, dlIso) {
   const lim = dlIso ? echeanceTxt(dlIso) : '';
   const link = payLink(r.id, r.email);
   const sujet = `Une place s'est libérée — Soirée Match${quand} (12h pour confirmer)`;
-  const txt = `Bonjour ${prenom},\n\nBonne nouvelle : une place vient de se libérer pour toi pour la Soirée Match${quand}.\n\nConfirme ta place ici :\n${link}\n\nTu as 12 heures pour le faire${lim ? `, soit jusqu'au ${lim}` : ''}. Passé ce délai, la place repart à la personne suivante sur la liste d'attente.\n\nRien n'est débité à ce stade : la soirée est confirmée le samedi qui précède, et c'est seulement à ce moment-là que tu recevras le lien de paiement.\n\nÀ très vite\nTa team Soirée Match`;
-  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : une place vient de se libérer pour toi pour la <b>Soirée Match${esc(quand)}</b>.</p><p style="text-align:center;margin:22px 0"><a href="${link}" style="display:inline-block;background:#156b54;color:#fff;text-decoration:none;padding:12px 22px;border-radius:26px;font-weight:700">Je confirme ma place</a></p><p>Tu as <b>12 heures</b> pour le faire${lim ? `, soit jusqu'au <b>${esc(lim)}</b>` : ''}. Passé ce délai, la place repart à la personne suivante sur la liste d'attente.</p><p><b>Rien n'est débité à ce stade</b> : la soirée est confirmée le samedi qui précède, et c'est seulement à ce moment-là que tu recevras le lien de paiement.</p><p>À très vite<br>Ta team Soirée Match</p>`;
+  const txt = `Bonjour ${prenom},\n\nBonne nouvelle : une place vient de se libérer pour toi pour la Soirée Match${quand}.\n\nConfirme ta place ici :\n${link}\n\nTu as 12 heures pour le faire${lim ? `, soit jusqu'au ${lim}` : ''}. Passé ce délai, la place repart à la personne suivante sur la liste d'attente.\n\nRien n'est débité à ce stade : la soirée est confirmée le dimanche qui précède, et c'est seulement à ce moment-là que tu recevras le lien de paiement.\n\nÀ très vite\nTa team Soirée Match`;
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>Bonne nouvelle : une place vient de se libérer pour toi pour la <b>Soirée Match${esc(quand)}</b>.</p><p style="text-align:center;margin:22px 0"><a href="${link}" style="display:inline-block;background:#156b54;color:#fff;text-decoration:none;padding:12px 22px;border-radius:26px;font-weight:700">Je confirme ma place</a></p><p>Tu as <b>12 heures</b> pour le faire${lim ? `, soit jusqu'au <b>${esc(lim)}</b>` : ''}. Passé ce délai, la place repart à la personne suivante sur la liste d'attente.</p><p><b>Rien n'est débité à ce stade</b> : la soirée est confirmée le dimanche qui précède, et c'est seulement à ce moment-là que tu recevras le lien de paiement.</p><p>À très vite<br>Ta team Soirée Match</p>`;
   transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: sujet, text: txt, html: emailShell(inner, unsubLink(r.email)) }).catch(() => {});
   logMails('Place libérée — 12h pour confirmer (paiement différé)', sujet, txt, [r], so);
 }
@@ -1989,8 +2055,8 @@ function mailPlaceConfirmee(so, r) {
   const prenom = (r.prenom || '').trim() || 'à toi';
   const quand = so.date_texte ? ` du ${so.date_texte}` : '';
   const sujet = `Ta place est confirmée — Soirée Match${quand}`;
-  const txt = `Bonjour ${prenom},\n\nC'est noté : ta place pour la Soirée Match${quand} est confirmée.${so.lieu ? `\nLieu : ${so.lieu}` : ''}\n\nRien n'est débité pour l'instant. La soirée est confirmée le samedi qui précède : tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras 24 heures pour le faire.\n\nÀ très vite\nTa team Soirée Match`;
-  const inner = `<p>Bonjour ${esc(prenom)},</p><p>C'est noté : ta place pour la <b>Soirée Match${esc(quand)}</b> est confirmée.</p>${so.lieu ? `<p>Lieu : ${esc(so.lieu)}</p>` : ''}<p><b>Rien n'est débité pour l'instant.</b> La soirée est confirmée le samedi qui précède : tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras 24 heures pour le faire.</p><p>À très vite<br>Ta team Soirée Match</p>`;
+  const txt = `Bonjour ${prenom},\n\nC'est noté : ta place pour la Soirée Match${quand} est confirmée.${so.lieu ? `\nLieu : ${so.lieu}` : ''}\n\nRien n'est débité pour l'instant. La soirée est confirmée le dimanche qui précède : tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras 24 heures pour le faire.\n\nÀ très vite\nTa team Soirée Match`;
+  const inner = `<p>Bonjour ${esc(prenom)},</p><p>C'est noté : ta place pour la <b>Soirée Match${esc(quand)}</b> est confirmée.</p>${so.lieu ? `<p>Lieu : ${esc(so.lieu)}</p>` : ''}<p><b>Rien n'est débité pour l'instant.</b> La soirée est confirmée le dimanche qui précède : tu recevras ce jour-là un e-mail avec un lien pour régler ta place, et tu auras 24 heures pour le faire.</p><p>À très vite<br>Ta team Soirée Match</p>`;
   transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: sujet, text: txt, html: emailShell(inner, unsubLink(r.email)) }).catch(() => {});
   logMails('Place confirmée depuis la liste d\'attente', sujet, txt, [r], so);
 }
@@ -2343,7 +2409,7 @@ const server = http.createServer(async (req, res) => {
     const so = getSoireeById(r.soiree_id);
     if (!so || !so.actif || so.annulee) return send(res, 200, pubMsg('Indisponible', 'Cette soirée n\'est plus disponible.'));
     // Paiement différé, soirée pas encore confirmée : ce lien sert à confirmer une place
-    // libérée depuis la liste d'attente. C'est gratuit, le paiement viendra après le samedi.
+    // libérée depuis la liste d'attente. C'est gratuit, le paiement viendra après le dimanche.
     if (isDeferred(so) && !so.confirm_sent) {
       db.prepare('UPDATE reservations SET hold_expires=NULL WHERE id=?').run(r.id);
       mailPlaceConfirmee(so, r);
@@ -2354,7 +2420,7 @@ const server = http.createServer(async (req, res) => {
     catch (e) { return send(res, 200, pubMsg('Paiement momentanément indisponible', 'Réessaie dans un instant.')); }
   }
 
-  // Décision admin (lien signé dans l'e-mail du samedi)
+  // Décision admin (lien signé dans l'e-mail du dimanche)
   if (p === '/decision' || p.startsWith('/decision/')) {
     const sid = Number(url.searchParams.get('sid') || 0);
     const t = String(url.searchParams.get('t') || '');
