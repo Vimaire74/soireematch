@@ -138,10 +138,20 @@ function sendConfirmation(i) {
   }
 }
 
-function sendOptIn(i) {
-  if (!transporter) return;
+function sendOptIn(i, relance = false) {
+  if (!transporter) return Promise.resolve();
   const prenom = (i.prenom || '').trim() || 'à toi';
   const link = `${SITE_URL}/confirmer?e=${encodeURIComponent(i.email)}&t=${confirmToken(i.email)}`;
+  if (relance) {
+    // Renvoi depuis l'admin : la personne s'est inscrite mais n'a jamais cliqué sur le lien de confirmation.
+    const inner = `<p>Bonjour ${esc(prenom)},</p><p><b>Tu n'as toujours pas validé ton e-mail : ton inscription à la Soirée Match est en suspens !</b></p><p>Tant que ton adresse n'est pas confirmée, tu ne reçois ni les prochaines dates ni les liens pour t'inscrire à une soirée. Un seul clic suffit :</p><p style="text-align:center;margin:24px 0"><a href="${link}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je valide mon inscription</a></p><p style="color:#5b6b64;font-size:14px">Si tu ne souhaites plus t'inscrire, ignore simplement cet e-mail : tu ne recevras plus rien de notre part.</p>`;
+    return transporter.sendMail({
+      from: MAIL_FROM, to: i.email,
+      subject: 'Ton inscription à la Soirée Match est en suspens',
+      text: `Bonjour ${prenom},\n\nTu n'as toujours pas validé ton e-mail : ton inscription à la Soirée Match est en suspens !\n\nTant que ton adresse n'est pas confirmée, tu ne reçois ni les prochaines dates ni les liens pour t'inscrire à une soirée. Valide-la ici :\n${link}\n\nSi tu ne souhaites plus t'inscrire, ignore cet e-mail : tu ne recevras plus rien.\n\nL'équipe Soirée Match`,
+      html: emailShell(inner, unsubLink(i.email)),
+    });
+  }
   const inner = `<p>Bonjour ${esc(prenom)},</p><p>Cette adresse vient d'être inscrite à la <b>Soirée Match</b>. Pour finaliser ton inscription et recevoir les prochaines soirées qui te correspondent, confirme ton adresse :</p><p style="text-align:center;margin:24px 0"><a href="${link}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Confirmer mon inscription</a></p><p style="color:#5b6b64;font-size:14px">Si ce n'est pas toi, ignore simplement cet e-mail : sans confirmation, tu ne recevras plus rien de notre part.</p>`;
   transporter.sendMail({
     from: MAIL_FROM, to: i.email,
@@ -149,6 +159,7 @@ function sendOptIn(i) {
     text: `Bonjour ${prenom},\n\nCette adresse vient d'être inscrite à la Soirée Match. Pour finaliser ton inscription, confirme ton adresse ici :\n${link}\n\nSi ce n'est pas toi, ignore cet e-mail : sans confirmation, tu ne recevras plus rien.\n\nL'équipe Soirée Match`,
     html: emailShell(inner, unsubLink(i.email)),
   }).catch((e) => console.error('Opt-in échoué:', e.message));
+  return Promise.resolve();
 }
 function confirmOptInPage(email, token) {
   const q = `e=${encodeURIComponent(email)}&t=${encodeURIComponent(token)}`;
@@ -253,6 +264,56 @@ const STRIPE_WH_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 const PAY_ON = !!STRIPE_SECRET;
 const unsubToken = (email) => crypto.createHmac('sha256', SECRET).update('unsub:' + String(email).toLowerCase()).digest('base64url');
 const unsubLink = (email) => `${SITE_URL}/unsub?e=${encodeURIComponent(email)}&t=${unsubToken(email)}`;
+// ---------- Sondage « pourquoi tu ne viens pas ? » ----------
+db.exec(`CREATE TABLE IF NOT EXISTS sondage(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  email TEXT, prenom TEXT,
+  reponses TEXT, ville TEXT, jour TEXT, blocage TEXT, genre TEXT, annee INTEGER
+)`);
+try { db.exec('ALTER TABLE sondage ADD COLUMN jour TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE sondage ADD COLUMN genre TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE sondage ADD COLUMN annee INTEGER'); } catch { /* déjà là */ }
+const sondageToken = (email) => crypto.createHmac('sha256', SECRET).update('sondage:' + String(email).toLowerCase()).digest('base64url');
+const sondageLink = (email) => `${SITE_URL}/sondage?e=${encodeURIComponent(email)}&t=${sondageToken(email)}`;
+const SONDAGE_OPTIONS = [
+  ['mardi',     'Le mardi, ça ne va pas : j\'ai aquaponey. Je préférerais…'],
+  ['engager',   'M\'engager me fait peur, je ne me décide qu\'au dernier moment.'],
+  ['loin',      'Lausanne, c\'est trop loin — j\'aimerais des soirées à…'],
+  ['emails',    'Je ne reçois pas les e-mails des soirées.'],
+  ['timide',    'Je suis timide, je n\'ose pas venir.'],
+  ['annulee',   'J\'ai essayé, mais la soirée a été annulée.'],
+  ['confiance', 'J\'ai de la peine à faire confiance.'],
+  ['couple',    'Je ne suis plus célibataire.'],
+  ['ami',       'Je viendrais plus volontiers avec un(e) ami(e).'],
+  ['horaire',   '20h30, c\'est trop tard ou trop tôt pour moi.'],
+  ['concept',   'Je n\'ai pas bien compris ce qui se passe sur place.'],
+  ['blocage',   'Il y a un truc qui me bloque :'],
+];
+const SONDAGE_VILLES = ['Yverdon', 'Vevey', 'Fribourg', 'Morges', 'Nyon'];
+const SONDAGE_JOURS = ['Lundi', 'Mercredi'];
+function sondagePage(email, token, deja) {
+  const q = `e=${encodeURIComponent(email)}&t=${encodeURIComponent(token)}`;
+  const prev = deja ? (() => { try { return JSON.parse(deja.reponses || '[]'); } catch { return []; } })() : [];
+  const cases = SONDAGE_OPTIONS.map(([k, lbl]) => {
+    const extra = k === 'mardi'
+      ? `<select name=jour style="margin:6px 0 0 30px;display:block"><option value="">— un autre jour —</option>${SONDAGE_JOURS.map((v) => `<option${deja && deja.jour === v ? ' selected' : ''}>${v}</option>`).join('')}</select>`
+      : k === 'loin'
+      ? `<select name=ville style="margin:6px 0 0 30px;display:block"><option value="">— choisis une ville —</option>${SONDAGE_VILLES.map((v) => `<option${deja && deja.ville === v ? ' selected' : ''}>${v}</option>`).join('')}<option value="Autre"${deja && deja.ville === 'Autre' ? ' selected' : ''}>Autre</option></select>`
+      : (k === 'blocage' ? `<textarea name=blocage rows=3 placeholder="Dis-nous tout, on ne le répétera pas." style="margin:6px 0 0 30px;display:block;width:calc(100% - 30px);box-sizing:border-box;border:1px solid #c9d9d6;border-radius:8px;padding:8px;font:inherit">${esc(deja && deja.blocage ? deja.blocage : '')}</textarea>` : '');
+    return `<label style="display:flex;gap:10px;align-items:flex-start;font-weight:400;font-size:1rem;margin:12px 0;cursor:pointer"><input type=checkbox name=r value="${k}"${prev.includes(k) ? ' checked' : ''} style="margin-top:5px;width:18px;height:18px"> <span style="flex:1">${esc(lbl)}${extra}</span></label>`;
+  }).join('');
+  return `${siteHead('Alors, qu\'est-ce qu\'on peut faire pour te satisfaire ?')}<div class=box>
+    <h1>Alors, qu'est-ce qu'on peut faire pour te satisfaire ?</h1>
+    <p class=muted>Trente secondes, douze cases, aucune mauvaise réponse. Coche tout ce qui te parle.</p>
+    ${deja ? '<p style="background:#eaf3f2;border-radius:8px;padding:8px 12px;font-size:.9rem">Tu as déjà répondu — tu peux modifier tes réponses, on garde la dernière version.</p>' : ''}
+    <form method=post action="/sondage?${q}" style="margin-top:10px">
+      ${cases}
+      <button class=btn style="margin-top:18px">Envoyer mes réponses</button>
+    </form>
+    <p class=muted style="font-size:.82rem;margin-top:22px">N.B. Les bars ne veulent pas bloquer leurs soirs de forte affluence avec une soirée rencontre. Nous sommes obligés de choisir un jour de faible fréquentation pour que ce soit possible — d'où le mardi, et le choix limité à lundi ou mercredi.</p>
+  </div></html>`;
+}
 const confirmToken = (email) => crypto.createHmac('sha256', SECRET).update('confirm:' + String(email).toLowerCase()).digest('base64url');
 
 // ---------- Soirées + réservations ----------
@@ -541,6 +602,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const prenom = (r.prenom || '').trim() || 'à toi';
     const unsub = unsubLink(r.email);
     const resa = resaLink(r.email);
+    const sondage = sondageLink(r.email);
     // On ne propose jamais une soirée que la personne a déjà réservée (elle recevrait un « réserve ta place » absurde).
     const prises = soireesDejaPrises(r.email);
     const pourSonProfil = forceEligible ? allSoirees : allSoirees.filter((so2) => eligibleForSoiree(r, so2));
@@ -572,13 +634,14 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     // {manque} = ce qui manque dans le sexe du destinataire (c'est la seule place qu'il peut combler) ;
     // s'il ne manque personne de son côté, on retombe sur le manque global. {manque_total} = toujours le global.
     const manqueR = (so && deficitSexeTxt(so, r.genre)) || manqueTxt;
-    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque_total\}/gi, manqueTxt).replace(/\{manque\}/gi, manqueR).replace(/\{sexe_oppose_sing\}/gi, oppS).replace(/\{sexe_oppose\}/gi, opp).replace(/\{eux_elles\}/gi, eux).replace(/\{ils_elles\}/gi, ils).replace(/\{soirees\}/gi, sT);
+    const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{sondage\}/gi, sondage).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque_total\}/gi, manqueTxt).replace(/\{manque\}/gi, manqueR).replace(/\{sexe_oppose_sing\}/gi, oppS).replace(/\{sexe_oppose\}/gi, opp).replace(/\{eux_elles\}/gi, eux).replace(/\{ils_elles\}/gi, ils).replace(/\{soirees\}/gi, sT);
     const subj = rep(subject);
     const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
     const btn = `<a href="${resa}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réserve ma place</a>`;
     const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
+      .replace(/\{sondage\}/gi, `<a href="${sondage}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réponds (30 secondes)</a>`)
       .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque_total\}/gi, esc(manqueTxt)).replace(/\{manque\}/gi, esc(manqueR)).replace(/\{sexe_oppose_sing\}/gi, esc(oppS)).replace(/\{sexe_oppose\}/gi, esc(opp)).replace(/\{eux_elles\}/gi, eux).replace(/\{ils_elles\}/gi, ils)
       .replace(/\{soirees\}/gi, sH)
       .replace(/\n/g, '<br>');
@@ -772,7 +835,9 @@ function loginPage(err) {
 function adminPage(query) {
   const q = (query.q || '').trim();
   const fg = query.genre || '', fr = query.recherche || '', fl = query.langue || '', ft = query.tranche || '';
+  const fnc = query.nc === '1';
   let sql = 'SELECT * FROM inscriptions WHERE 1=1', args = [];
+  if (fnc) sql += ' AND COALESCE(confirmed,0)=0 AND COALESCE(unsubscribed,0)=0';
   if (q) { sql += ' AND (prenom LIKE ? OR nom LIKE ? OR email LIKE ?)'; const l = `%${q}%`; args.push(l, l, l); }
   if (fg) { sql += ' AND genre = ?'; args.push(fg); }
   if (fr) { sql += ' AND recherche = ?'; args.push(fr); }
@@ -816,9 +881,11 @@ function adminPage(query) {
       <select name=recherche><option value="">Toutes recherches</option>${['Des hommes', 'Des femmes', 'Les deux'].map((v) => opt(v, fr)).join('')}</select>
       <select name=langue><option value="">Toutes langues</option>${['Français', 'Anglais', 'Espagnol', 'Allemand', 'Italien'].map((v) => opt(v, fl)).join('')}</select>
       <select name=tranche><option value="">Tous âges</option>${['20-30', '30-40', '40-50', '50-60', '60+'].map((v) => `<option value="${v}"${v === ft ? ' selected' : ''}>${v} ans</option>`).join('')}</select>
+      <label style="display:flex;align-items:center;gap:6px;font-weight:400;font-size:.9rem"><input type=checkbox name=nc value=1${fnc ? ' checked' : ''}> ⏳ non confirmés seulement</label>
       <button>Filtrer</button>
       <a href=/admin><button type=button class=sec>Réinitialiser</button></a>
     </form>
+    ${query.relance ? `<div style="margin:6px 0 12px;padding:10px 14px;background:#fff6e5;border:1px solid #e8d2a8;border-radius:10px;font-size:.92rem">E-mail « inscription en suspens » envoyé à <b>${Number(query.relance)}</b> personne(s)${Number(query.ignores) ? ` — ${Number(query.ignores)} ignorée(s) : déjà confirmée(s) ou désinscrite(s)` : ''}.</div>` : ''}
 
     <form method=post action=/admin/controle style="margin:10px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <span class=hint>Fiche de contrôle&nbsp;:</span>
@@ -835,8 +902,10 @@ function adminPage(query) {
       <a href="/admin/backup"><button type=button class=sec>💾 Sauvegarder la base</button></a>
       <button form=act formaction=/admin/export>⬇ Exporter la sélection (CSV)</button>
       <a href="/admin/export?all=1${q || fg || fr || fl || ft ? '&q=' + encodeURIComponent(q) + '&genre=' + encodeURIComponent(fg) + '&recherche=' + encodeURIComponent(fr) + '&langue=' + encodeURIComponent(fl) + '&tranche=' + encodeURIComponent(ft) : ''}"><button type=button class=sec>⬇ Exporter tout (filtré)</button></a>
+      <button form=act formaction=/admin/relancer-confirmation class=sec onclick="return confirm('Renvoyer le message « inscription en suspens » aux personnes cochées ? Seules celles qui ne sont pas encore confirmées le recevront.')">⏳ Renvoyer la confirmation</button>
       <button form=act formaction=/admin/delete class=danger onclick="return confirm('Mettre les inscriptions sélectionnées à la corbeille ? Elles quittent la liste mais restent récupérables.')">🗑 Supprimer un/des inscrit(s)</button>
       <a href="/admin/poubelle"><button type=button class=sec>♻ Corbeille${poubelleCount() ? ' (' + poubelleCount() + ')' : ''}</button></a>
+      <a href="/admin/sondage"><button type=button class=sec>📊 Sondage${sondageCount() ? ' (' + sondageCount() + ')' : ''}</button></a>
     </div>
 
     <div style="margin:6px 0 12px;padding:10px 14px;background:#eaf3f2;border:1px solid var(--line);border-radius:10px;font-size:.92rem">Sélection affichée : <b>${rows.length}</b> personne(s) — <b>${selF}</b> femme(s) · <b>${selH}</b> homme(s)${ft ? ` <span style=\"color:var(--muted)\">(tranche ${esc(ft)} ans · souplesse ±3)</span>` : ''}</div>
@@ -1100,6 +1169,22 @@ Ta team Soirée Match`;
 
 const TEMPLATES = [
   {
+    name: 'Sondage — qu\'est-ce qu\'on peut faire pour te satisfaire ?',
+    subject: 'Alors, qu\'est-ce qu\'on peut faire pour te satisfaire ?',
+    body: `Bonjour {prenom},
+
+On va être directs : on a des dates, un bar, un concept intelligent, une liste de gens motivés et assez d'inscrits pour les soirées 20-50 ans (on manque encore de monde pour les 50+ et pour les gays et lesbiennes)… et pourtant, toujours pas assez d'inscrits à une même soirée pour en faire une. Il y a donc quelque chose qui coince, et on aimerait savoir quoi.
+
+Alors, qu'est-ce qu'on peut faire pour te satisfaire ? Trente secondes, douze cases, aucune mauvaise réponse (même l'aquaponey) :
+
+{sondage}
+
+Promis, on lit tout, et on s'adapte. Mardi, Lausanne, le format : rien n'est gravé dans le marbre.
+
+Merci d'avance,
+L'équipe Soirée Match`,
+  },
+  {
     name: 'Email général',
     subject: 'De nouvelles dates en octobre — et un changement dans les inscriptions',
     body: `Bonjour {prenom},
@@ -1286,7 +1371,7 @@ function composePage() {
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=auto checked> Envoyer uniquement aux personnes concernées par les soirées cochées (âge ±3, sexe, orientation)</label>
       <p class=hint>Ce filtre <b>s'ajoute</b> aux réglages « À qui ? » ci-dessus : si tu choisis Genre = Homme, seuls les hommes concernés recevront l'e-mail. Les personnes <b>déjà inscrites</b> à ces soirées (payées, en attente de paiement ou en liste d'attente) sont automatiquement écartées.</p>
       <p class=hint>Dans tous les cas, la balise <code>{soirees}</code> ne propose jamais à quelqu'un une soirée qu'il a déjà réservée.</p>
-      <p class=hint>Balises de relance (une seule soirée cochée) : <code>{manque}</code> = ce qui manque <b>dans le sexe du destinataire</b> (« 4 femmes » pour une femme, « 2 hommes » pour un homme) ; <code>{manque_total}</code> = tout ce qui manque (« 4 femmes et 2 hommes ») ; <code>{sexe_oppose}</code> = « hommes déjà inscrits » / « femmes déjà inscrites » ; <code>{sexe_oppose_sing}</code> = « l'homme » / « la femme » ; <code>{eux_elles}</code> et <code>{ils_elles}</code> = pronoms du groupe d'en face (une femme lit « eux » / « ils », un homme lit « elles »).</p>
+      <p class=hint>Balises de relance (une seule soirée cochée) : <code>{manque}</code> = ce qui manque <b>dans le sexe du destinataire</b> (« 4 femmes » pour une femme, « 2 hommes » pour un homme) ; <code>{manque_total}</code> = tout ce qui manque (« 4 femmes et 2 hommes ») ; <code>{sexe_oppose}</code> = « hommes déjà inscrits » / « femmes déjà inscrites » ; <code>{sexe_oppose_sing}</code> = « l'homme » / « la femme » ; <code>{eux_elles}</code> et <code>{ils_elles}</code> = pronoms du groupe d'en face (une femme lit « eux » / « ils », un homme lit « elles »). <code>{sondage}</code> = bouton vers le questionnaire « qu'est-ce qu'on peut faire pour te satisfaire ? », réponses dans « Sondage ».</p>
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=force> Afficher <b>toutes</b> les dates dans <code>{soirees}</code>, même hors du profil du destinataire</label>
       <p class=hint>Sans cette case, chacun ne voit que les soirées de sa tranche d'âge et de son orientation. Avec, tout le monde voit le programme complet — utile pour annoncer de nouvelles dates. ⚠ Le bouton « Réserver ma place » d'une date hors profil ne réservera pas : la personne sera redirigée vers ses propres dates.</p>
 
@@ -1474,6 +1559,59 @@ function backupPage() {
       <p style="margin:0 0 8px"><b>Si plusieurs fichiers apparaissent</b>, télécharge-les tous : <code>-journal</code>, <code>-wal</code> et <code>-shm</code> contiennent des écritures récentes qui ne sont pas encore dans le fichier principal.</p>
       <p style="margin:0;color:#5b6b64;font-size:14px">Le fichier est copié tel quel, sans compactage : les données récemment effacées y restent parfois récupérables. C'est volontaire.</p>
     </div>
+  </div></html>`;
+}
+function sondageCount() {
+  try { return db.prepare('SELECT COUNT(*) n FROM sondage').get().n; } catch { return 0; }
+}
+function sondageAdminPage() {
+  let rows = [];
+  try { rows = db.prepare('SELECT * FROM sondage ORDER BY id DESC').all(); } catch { rows = []; }
+  const parse = (r) => { try { return JSON.parse(r.reponses || '[]'); } catch { return []; } };
+  const n = rows.length;
+  // Genre / année : ceux enregistrés avec la réponse, sinon la fiche d'inscription (réponses antérieures à la colonne).
+  const fiche = (r) => { try { return db.prepare('SELECT genre, annee FROM inscriptions WHERE lower(email)=lower(?)').get(r.email || '') || {}; } catch { return {}; } };
+  const gOf = (r) => r.genre || fiche(r).genre || '';
+  const aOf = (r) => { const y = r.annee || fiche(r).annee; return y ? ageOf(y) : null; };
+  const tOf = (r) => { const a = aOf(r); if (a == null) return ''; if (a < 30) return '20-30'; if (a < 40) return '30-40'; if (a < 50) return '40-50'; if (a < 60) return '50-60'; return '60+'; };
+  const COLS = [['Tous', () => true], ['Femmes', (r) => gOf(r) === 'Femme'], ['Hommes', (r) => gOf(r) === 'Homme'], ...TRANCHES.map((tr) => [tr + ' ans', (r) => tOf(r) === tr])];
+  const groupes = COLS.map(([nom, f]) => [nom, rows.filter(f)]);
+  // Taux de réponse : répondants / inscrits confirmés et non désinscrits, par colonne.
+  let base = [];
+  try { base = db.prepare('SELECT genre, annee FROM inscriptions WHERE COALESCE(confirmed,0)=1 AND COALESCE(unsubscribed,0)=0').all(); } catch { base = []; }
+  const tauxLigne = COLS.map(([nom, f]) => {
+    const b = base.filter(f).length, c = groupes.find(([nn]) => nn === nom)[1].length;
+    return `<td style="text-align:center">${c} / ${b}${b ? ` <span style="color:#7b8a83">(${Math.round(c * 100 / b)}%)</span>` : ''}</td>`;
+  }).join('');
+  const croise = SONDAGE_OPTIONS.map(([k, lbl]) => `<tr><td>${esc(lbl.replace(/\s*[:…]$/, ''))}</td>${groupes.map(([, g]) => {
+    const c = g.filter((r) => parse(r).includes(k)).length;
+    return `<td style="text-align:center">${c ? `<b>${c}</b> <span style="color:#7b8a83">(${Math.round(c * 100 / g.length)}%)</span>` : '<span style="color:#b8c4c1">—</span>'}</td>`;
+  }).join('')}</tr>`).join('');
+  const compte = SONDAGE_OPTIONS.map(([k, lbl]) => {
+    const c = rows.filter((r) => parse(r).includes(k)).length;
+    const pct = n ? Math.round(c * 100 / n) : 0;
+    return `<tr><td>${esc(lbl)}</td><td style="text-align:right"><b>${c}</b></td><td style="width:40%"><div style="background:#e3ecea;border-radius:6px;height:14px"><div style="width:${pct}%;background:#156b54;height:14px;border-radius:6px"></div></div></td><td style="text-align:right">${pct}%</td></tr>`;
+  }).join('');
+  const villes = SONDAGE_VILLES.concat('Autre').map((v) => [v, rows.filter((r) => r.ville === v).length]).filter(([, c]) => c);
+  const villesTxt = villes.length ? villes.map(([v, c]) => `${esc(v)} : <b>${c}</b>`).join(' · ') : 'aucune ville choisie pour l\'instant';
+  const jours = SONDAGE_JOURS.map((v) => [v, rows.filter((r) => r.jour === v).length]).filter(([, c]) => c);
+  const joursTxt = jours.length ? jours.map(([v, c]) => `${esc(v)} : <b>${c}</b>`).join(' · ') : 'aucun autre jour choisi pour l\'instant';
+  const libres = rows.filter((r) => (r.blocage || '').trim());
+  const detail = rows.map((r) => `<tr><td>${esc(String(r.created_at || '').slice(0, 10))}</td><td>${esc(r.prenom || '')}</td><td>${esc(r.email || '')}</td><td>${esc(gOf(r))}${aOf(r) != null ? ', ' + aOf(r) + ' ans' : ''}</td><td>${parse(r).map((k) => { const o = SONDAGE_OPTIONS.find(([kk]) => kk === k); return o ? esc(o[1].replace(/\s*[:…]$/, '')) : ''; }).filter(Boolean).join('<br>')}${r.jour ? `<br><i>→ ${esc(r.jour)}</i>` : ''}${r.ville ? `<br><i>→ ${esc(r.ville)}</i>` : ''}</td><td>${esc(r.blocage || '')}</td></tr>`).join('');
+  return `${pageHead('Sondage')}
+  <div class=wrap>
+    <a class=back href="/admin">← Retour aux inscriptions</a>
+    <h2>Sondage « qu'est-ce qu'on peut faire pour te satisfaire ? »</h2>
+    <p><b>${n}</b> réponse(s). Chaque personne peut cocher plusieurs cases, les pourcentages sont calculés sur le nombre de répondants.</p>
+    ${n ? `<table style="margin-top:14px"><tr><th>Réponse</th><th></th><th></th><th></th></tr>${compte}</table>
+    <p style="margin-top:14px">Autre jour souhaité : ${joursTxt}<br>Villes souhaitées : ${villesTxt}</p>
+    <h3 style="margin-top:26px">Par sexe et par tranche d'âge</h3>
+    <p class=hint>Dans chaque colonne : nombre de personnes ayant coché la réponse, et pourcentage parmi les répondants de cette colonne. La dernière ligne donne le taux de réponse : répondants / inscrits confirmés.</p>
+    <div style="overflow:auto"><table style="font-size:.9rem"><tr><th>Réponse</th>${COLS.map(([nom]) => `<th style="text-align:center">${esc(nom)}</th>`).join('')}</tr>${croise}<tr style="background:#eaf3f2"><td><b>Taux de réponse</b></td>${tauxLigne}</tr></table></div>
+    ${libres.length ? `<h3 style="margin-top:22px">Ce qui bloque, dans leurs mots (${libres.length})</h3>${libres.map((r) => `<div class=panel style="margin:8px 0"><p style="margin:0 0 4px;color:#5b6b64;font-size:.85rem">${esc(r.prenom || r.email || '')}</p><p style="margin:0">${esc(r.blocage)}</p></div>`).join('')}` : ''}
+    <h3 style="margin-top:22px">Détail par personne</h3>
+    <table><tr><th>Date</th><th>Prénom</th><th>E-mail</th><th>Sexe, âge</th><th>Réponses</th><th>Blocage</th></tr>${detail}</table>`
+    : '<div class=empty>Aucune réponse pour l\'instant. Envoie le modèle « Sondage » depuis « Écrire aux inscrits » : la balise {sondage} place le bouton.</div>'}
   </div></html>`;
 }
 function poubelleCount() {
@@ -2325,6 +2463,32 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Désinscription : page de confirmation (GET) puis action réelle (POST, ou 1-clic Gmail/Outlook)
+  if (p === '/sondage') {
+    const email = url.searchParams.get('e') || '';
+    const t = url.searchParams.get('t') || '';
+    const good = email ? sondageToken(email) : '';
+    const valid = !!good && t.length === good.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(good));
+    if (!valid) return send(res, 200, pubMsg('Lien invalide', 'Ce lien ne fonctionne pas. Écris-nous à contact@soireematch.com et on s\'en occupe.'));
+    const deja = db.prepare('SELECT * FROM sondage WHERE lower(email)=lower(?) ORDER BY id DESC LIMIT 1').get(email);
+    if (req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      let r = d.r || [];
+      if (!Array.isArray(r)) r = [r];
+      const cles = new Set(SONDAGE_OPTIONS.map(([k]) => k));
+      r = r.filter((k) => cles.has(k));
+      const ville = SONDAGE_VILLES.concat('Autre').includes(d.ville) ? d.ville : '';
+      const jour = SONDAGE_JOURS.includes(d.jour) ? d.jour : '';
+      const blocage = String(d.blocage || '').trim().slice(0, 2000);
+      if (ville && !r.includes('loin')) r.push('loin');
+      if (jour && !r.includes('mardi')) r.push('mardi');
+      if (blocage && !r.includes('blocage')) r.push('blocage');
+      const insc = db.prepare('SELECT prenom, genre, annee FROM inscriptions WHERE lower(email)=lower(?)').get(email) || {};
+      if (deja) db.prepare('UPDATE sondage SET created_at=?,reponses=?,ville=?,jour=?,blocage=?,genre=?,annee=? WHERE id=?').run(nowIso(), JSON.stringify(r), ville, jour, blocage, insc.genre || '', insc.annee || null, deja.id);
+      else db.prepare('INSERT INTO sondage(created_at,email,prenom,reponses,ville,jour,blocage,genre,annee) VALUES(?,?,?,?,?,?,?,?,?)').run(nowIso(), email, insc.prenom || '', JSON.stringify(r), ville, jour, blocage, insc.genre || '', insc.annee || null);
+      return send(res, 200, pubMsg('Merci !', 'C\'est noté, et c\'est lu. On s\'adapte, et on te tient au courant. Si tu veux ajouter quelque chose : contact@soireematch.com.'));
+    }
+    return send(res, 200, sondagePage(email, t, deja));
+  }
   if (p === '/unsub') {
     const email = url.searchParams.get('e') || '';
     const t = url.searchParams.get('t') || '';
@@ -2582,6 +2746,23 @@ const server = http.createServer(async (req, res) => {
       return send(res, 302, '', { Location: '/admin' });
     }
 
+    // Renvoi de l'e-mail de confirmation (double opt-in) aux personnes cochées qui n'ont pas validé
+    if (p === '/admin/relancer-confirmation' && req.method === 'POST') {
+      const d = parseForm(await readBody(req));
+      let ids = d.ids || [];
+      if (!Array.isArray(ids)) ids = [ids];
+      ids = ids.map(Number).filter(Boolean);
+      let envoyes = 0, ignores = 0;
+      for (const id of ids) {
+        const r = db.prepare('SELECT * FROM inscriptions WHERE id=?').get(id);
+        if (!r || r.confirmed || r.unsubscribed || estBanni(r.email)) { ignores++; continue; }
+        try { await sendOptIn(r, true); envoyes++; } catch (e) { console.error('Relance confirmation', r.email, e.message); ignores++; }
+        await sleep(PAUSE_ENVOI_MS);
+      }
+      return send(res, 302, '', { Location: `/admin?nc=1&relance=${envoyes}&ignores=${ignores}` });
+    }
+
+    if (p === '/admin/sondage' && req.method === 'GET') return send(res, 200, sondageAdminPage());
     // Corbeille des inscriptions
     if (p === '/admin/poubelle' && req.method === 'GET') return send(res, 200, poubellePage(''));
     if (p === '/admin/poubelle/restaurer' && req.method === 'POST') {
@@ -2651,8 +2832,22 @@ const server = http.createServer(async (req, res) => {
       // En arrière-plan (non bloquant), puis copie d'archive dans la boîte contact@.
       // La copie part APRÈS : runCampaign partage un compteur global, deux envois simultanés fausseraient les décomptes.
       const toutesDates = (d.force === 'on' || d.force === '1');
+      // Campagne avec la balise {sondage} : un seul e-mail à l'admin, avec le lien vers la page de résultats
+      // (qui se met à jour toute seule). Pas d'e-mail par réponse.
+      if (/\{sondage\}/i.test(body) && adminMail() && transporter) {
+        transporter.sendMail({ from: MAIL_FROM, to: adminMail(),
+          subject: `Sondage envoyé à ${recips.length} personne(s) — résultats`,
+          text: `Le sondage « ${subject} » part vers ${recips.length} personne(s).\n\nLes réponses s'enregistrent au fur et à mesure, une par personne. La synthèse (par réponse, par sexe, par tranche d'âge, textes libres, détail par personne) est ici :\n${SITE_URL}/admin/sondage\n\nGarde ce lien : la page se met à jour toute seule, il n'y aura pas d'autre e-mail.` }).catch(() => {});
+      }
       runCampaign(recips, subject, body, linkUrl, so, selected, toutesDates, Number(camp.lastInsertRowid))
-        .then(() => { if (ARCHIVE_TO) return runCampaign([{ prenom: 'Marc', email: ARCHIVE_TO, genre: '', recherche: '', annee: 0, langues: '' }], '[COPIE] ' + subject, body, linkUrl, so, selected, true); })
+        .then(() => {
+          if (!ARCHIVE_TO) return;
+          // La copie d'archive est rendue avec le genre du ciblage (ou celui du premier destinataire réel),
+          // sinon les balises {manque} / {sexe_oppose} / {eux_elles} tombent sur leur version neutre, qui ne
+          // correspond à aucun e-mail réellement parti.
+          const gCopie = genre || (recips[0] && recips[0].genre) || '';
+          return runCampaign([{ prenom: 'Marc', email: ARCHIVE_TO, genre: gCopie, recherche: '', annee: 0, langues: '' }], `[COPIE${gCopie ? ' — rendu ' + gCopie.toLowerCase() : ''}] ` + subject, body, linkUrl, so, selected, true);
+        })
         .catch(() => {});
       return send(res, 302, '', { Location: '/admin' });
     }
@@ -2681,7 +2876,8 @@ const server = http.createServer(async (req, res) => {
         const selected = (c.soirees || '').split(',').map((x) => getSoiree(x.trim())).filter(Boolean);
         const so = selected.length === 1 ? selected[0] : null;
         const linkUrl = so ? soireeLink(so.code) : SITE_URL;
-        runCampaign([{ prenom: 'Marc', email: to, genre: '', recherche: '', annee: 0, langues: '' }], '[COPIE] ' + c.subject, c.body, linkUrl, so, selected, true);
+        const gCopie = (c.genres || '').split(',')[0].trim();
+        runCampaign([{ prenom: 'Marc', email: to, genre: gCopie, recherche: '', annee: 0, langues: '' }], `[COPIE${gCopie ? ' — rendu ' + gCopie.toLowerCase() : ''}] ` + c.subject, c.body, linkUrl, so, selected, true);
       }
       return send(res, 302, '', { Location: '/admin/emails?done=1' });
     }
