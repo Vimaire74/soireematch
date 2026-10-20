@@ -277,6 +277,7 @@ try { db.exec('ALTER TABLE sondage ADD COLUMN annee INTEGER'); } catch { /* déj
 const sondageToken = (email) => crypto.createHmac('sha256', SECRET).update('sondage:' + String(email).toLowerCase()).digest('base64url');
 const sondageLink = (email) => `${SITE_URL}/sondage?e=${encodeURIComponent(email)}&t=${sondageToken(email)}`;
 const SONDAGE_OPTIONS = [
+  ['ok',        'Tout va bien comme ça, je viendrai quand une date me conviendra.'],
   ['mardi',     'Le mardi, ça ne va pas : j\'ai aquaponey. Je préférerais…'],
   ['engager',   'M\'engager me fait peur, je ne me décide qu\'au dernier moment.'],
   ['loin',      'Lausanne, c\'est trop loin — j\'aimerais des soirées à…'],
@@ -305,7 +306,7 @@ function sondagePage(email, token, deja) {
   }).join('');
   return `${siteHead('Alors, qu\'est-ce qu\'on peut faire pour te satisfaire ?')}<div class=box>
     <h1>Alors, qu'est-ce qu'on peut faire pour te satisfaire ?</h1>
-    <p class=muted>Trente secondes, douze cases, aucune mauvaise réponse. Coche tout ce qui te parle.</p>
+    <p class=muted>Dix secondes, treize cases, aucune mauvaise réponse. Coche tout ce qui te parle.</p>
     ${deja ? '<p style="background:#eaf3f2;border-radius:8px;padding:8px 12px;font-size:.9rem">Tu as déjà répondu — tu peux modifier tes réponses, on garde la dernière version.</p>' : ''}
     <form method=post action="/sondage?${q}" style="margin-top:10px">
       ${cases}
@@ -641,7 +642,7 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
-      .replace(/\{sondage\}/gi, `<a href="${sondage}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réponds (30 secondes)</a>`)
+      .replace(/\{sondage\}/gi, `<a href="${sondage}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réponds (10 secondes)</a>`)
       .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque_total\}/gi, esc(manqueTxt)).replace(/\{manque\}/gi, esc(manqueR)).replace(/\{sexe_oppose_sing\}/gi, esc(oppS)).replace(/\{sexe_oppose\}/gi, esc(opp)).replace(/\{eux_elles\}/gi, eux).replace(/\{ils_elles\}/gi, ils)
       .replace(/\{soirees\}/gi, sH)
       .replace(/\n/g, '<br>');
@@ -1175,13 +1176,29 @@ const TEMPLATES = [
 
 On va être directs : on a des dates, un bar, un concept intelligent, une liste de gens motivés et assez d'inscrits pour les soirées 20-50 ans (on manque encore de monde pour les 50+ et pour les gays et lesbiennes)… et pourtant, toujours pas assez d'inscrits à une même soirée pour en faire une. Il y a donc quelque chose qui coince, et on aimerait savoir quoi.
 
-Alors, qu'est-ce qu'on peut faire pour te satisfaire ? Trente secondes, douze cases, aucune mauvaise réponse (même l'aquaponey) :
+Alors, qu'est-ce qu'on peut faire pour te satisfaire ? Dix secondes, treize cases, aucune mauvaise réponse (même l'aquaponey) :
 
 {sondage}
 
 Promis, on lit tout, et on s'adapte. Mardi, Lausanne, le format : rien n'est gravé dans le marbre.
 
 Merci d'avance,
+L'équipe Soirée Match`,
+  },
+  {
+    name: 'Sondage bis — pour ceux qui n\'ont pas répondu',
+    subject: 'On a eu 18 réponses sur 99. Et toi ?',
+    body: `Bonjour {prenom},
+
+Il y a quelques jours, on t'a demandé ce qu'on pouvait faire pour te satisfaire. 18 personnes sur 99 ont répondu — merci à elles, on a appris des choses (l'heure, le jour, les annulations…).
+
+Mais 81 silences, ça ne nous dit rien. Peut-être que tout va bien et que tu attends simplement la bonne date. Peut-être pas. On a ajouté une case pour ça : « Tout va bien comme ça ». Si c'est ton cas, coche-la, c'est tout.
+
+Dix secondes, treize cases, aucune mauvaise réponse :
+
+{sondage}
+
+Merci, et à bientôt — on y croit toujours.
 L'équipe Soirée Match`,
   },
   {
@@ -1373,6 +1390,7 @@ function composePage() {
       <p class=hint>Dans tous les cas, la balise <code>{soirees}</code> ne propose jamais à quelqu'un une soirée qu'il a déjà réservée.</p>
       <p class=hint>Balises de relance (une seule soirée cochée) : <code>{manque}</code> = ce qui manque <b>dans le sexe du destinataire</b> (« 4 femmes » pour une femme, « 2 hommes » pour un homme) ; <code>{manque_total}</code> = tout ce qui manque (« 4 femmes et 2 hommes ») ; <code>{sexe_oppose}</code> = « hommes déjà inscrits » / « femmes déjà inscrites » ; <code>{sexe_oppose_sing}</code> = « l'homme » / « la femme » ; <code>{eux_elles}</code> et <code>{ils_elles}</code> = pronoms du groupe d'en face (une femme lit « eux » / « ils », un homme lit « elles »). <code>{sondage}</code> = bouton vers le questionnaire « qu'est-ce qu'on peut faire pour te satisfaire ? », réponses dans « Sondage ».</p>
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=force> Afficher <b>toutes</b> les dates dans <code>{soirees}</code>, même hors du profil du destinataire</label>
+      <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=sans_sondage> Ne pas envoyer aux personnes qui ont <b>déjà répondu au sondage</b>${sondageCount() ? ` (${sondageCount()} personne(s) écartée(s))` : ''}</label>
       <p class=hint>Sans cette case, chacun ne voit que les soirées de sa tranche d'âge et de son orientation. Avec, tout le monde voit le programme complet — utile pour annoncer de nouvelles dates. ⚠ Le bouton « Réserver ma place » d'une date hors profil ne réservera pas : la personne sera redirigée vers ses propres dates.</p>
 
       <label>Objet</label>
@@ -2824,6 +2842,12 @@ const server = http.createServer(async (req, res) => {
             return selected.some((sel) => eligibleForSoiree(p, sel) && !prises.has(sel.id));
           })
         : recipientsFor({ genre, recherche, tranche });
+      // Relance d'un sondage : on écarte ceux qui ont déjà répondu (ça les agace et ça fausse les chiffres).
+      const sansSondage = (d.sans_sondage === 'on' || d.sans_sondage === '1');
+      if (sansSondage) {
+        const dejaRepondu = new Set(db.prepare('SELECT lower(email) e FROM sondage').all().map((x) => x.e));
+        for (let i = recips.length - 1; i >= 0; i--) if (dejaRepondu.has(String(recips[i].email || '').toLowerCase())) recips.splice(i, 1);
+      }
       const tpl = (d.tpl_name || '').trim();
       const emails = recips.map((r) => r.email).join(', ');
       const genres = [...new Set(recips.map((r) => r.genre).filter(Boolean))].join(', ');
