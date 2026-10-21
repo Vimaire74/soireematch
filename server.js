@@ -326,6 +326,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS campaigns(
   tpl TEXT, soirees TEXT, tranches TEXT, recipients INTEGER, sent INTEGER, failed INTEGER)`);
 try { db.exec('ALTER TABLE campaigns ADD COLUMN recipient_list TEXT'); } catch { /* déjà là */ }
 try { db.exec('ALTER TABLE campaigns ADD COLUMN genres TEXT'); } catch { /* déjà là */ }
+try { db.exec('ALTER TABLE campaigns ADD COLUMN palette TEXT'); } catch { /* déjà là */ }
 db.exec(`CREATE TABLE IF NOT EXISTS reservations(
   id INTEGER PRIMARY KEY AUTOINCREMENT, soiree_id INTEGER,
   prenom TEXT, nom TEXT, email TEXT, tel TEXT, annee INTEGER, genre TEXT, recherche TEXT,
@@ -593,7 +594,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PAUSE_ENVOI_MS = Math.max(0, Number(process.env.PAUSE_ENVOI_MS) || 3000);
 let lastCampaign = null; // { at, total, sent, failed, running, subject }
 
-async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null, soireesForList = null, forceEligible = false, campaignId = null) {
+// Mise en forme légère dans les textes de campagne : **gras**, *italique*, __souligné__.
+// Appliquée sur le HTML déjà échappé (les marques ne sont pas des caractères HTML, elles survivent à esc()).
+function miseEnForme(h) {
+  return String(h)
+    .replace(/__(.+?)__/gs, '<u>$1</u>')
+    .replace(/\*\*(.+?)\*\*/gs, '<b>$1</b>')
+    .replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, '$1<i>$2</i>');
+}
+// Version texte brut : on retire simplement les marques.
+function sansMarques(t) {
+  return String(t)
+    .replace(/__(.+?)__/gs, '$1')
+    .replace(/\*\*(.+?)\*\*/gs, '$1')
+    .replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, '$1$2');
+}
+async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = null, soireesForList = null, forceEligible = false, campaignId = null, palette = 'aqua') {
   lastCampaign = { at: new Date().toISOString(), total: recipients.length, sent: 0, failed: 0, running: true, subject };
   const dateTxt = (so && so.date_texte) ? so.date_texte : '';
   const lieuTxt = (so && so.lieu) ? so.lieu : '';
@@ -620,9 +636,9 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
       ? eligibles.map((so2) => `• ${so2.date_texte || so2.code}${soireeMetaShort(so2) ? ' · ' + soireeMetaShort(so2) : ''}${so2.lieu ? '\n  ' + so2.lieu : ''}\n  ${pourLui(so2) ? `Réserver : ${resaLinkSoiree(r.email, so2.code)}` : `(${soireeAudience(so2)} — pas ton profil)`}`).join('\n\n')
       : aucune;
     const sH = eligibles.length
-      ? eligibles.map((so2) => `<div style="background:#ffffff;border:1px solid ${pourLui(so2) ? '#57a893' : '#dbe5e1'};border-left:4px solid ${pourLui(so2) ? '#d0aa54' : '#c8d8d2'};border-radius:10px;padding:14px 16px;margin:14px 0"><div style="font-weight:700;color:${pourLui(so2) ? '#156b54' : '#7b8a83'};font-size:16px">${esc(so2.date_texte || so2.code)}</div><div style="color:#5b6b64;font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so2))}${so2.lieu ? ' · ' + esc(so2.lieu) : ''}</div>${pourLui(so2)
-          ? `<a href="${resaLinkSoiree(r.email, so2.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:22px;font-weight:600;font-size:14px">Réserver ma place</a>`
-          : `<div style="color:#8a9a99;font-size:13px;font-style:italic">${esc(soireeAudience(so2))} — ce n'est pas ton profil, mais on t'annonce la date.</div>`}</div>`).join('')
+      ? eligibles.map((so2) => `<div style="border-left:3px solid ${pourLui(so2) ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.35)'};padding:4px 0 6px 16px;margin:16px 0"><div style="font-family:Georgia,'Times New Roman',serif;font-weight:700;color:#ffffff;font-size:19px;${pourLui(so2) ? '' : 'opacity:.7'}">${esc(so2.date_texte || so2.code)}</div><div style="color:rgba(255,255,255,.82);font-size:13px;margin:3px 0 12px">${esc(soireeMetaShort(so2))}${so2.lieu ? ' · ' + esc(so2.lieu) : ''}</div>${pourLui(so2)
+          ? `<a href="${resaLinkSoiree(r.email, so2.code)}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:10px 20px;border-radius:22px;font-weight:700;font-size:14px">Réserver ma place</a>`
+          : `<div style="color:rgba(255,255,255,.7);font-size:13px;font-style:italic">${esc(soireeAudience(so2))} — ce n'est pas ton profil, mais on t'annonce la date.</div>`}</div>`).join('')
       : `<div style="margin:12px 0;color:#8a9a99">${esc(aucune)}</div>`;
     const dateR = eligibles.length ? eligibles.map((x) => x.date_texte || x.code).join(' ou le ') : dateTxt;
     const opp = r.genre === 'Homme' ? 'femmes déjà inscrites' : (r.genre === 'Femme' ? 'hommes déjà inscrits' : 'femmes et hommes déjà inscrits');
@@ -637,16 +653,16 @@ async function runCampaign(recipients, subject, body, linkUrl = SITE_URL, so = n
     const manqueR = (so && deficitSexeTxt(so, r.genre)) || manqueTxt;
     const rep = (s) => s.replace(/\{pr[ée]nom\}/gi, prenom).replace(/\{lien\}/gi, linkUrl).replace(/\{reserver\}/gi, resa).replace(/\{sondage\}/gi, sondage).replace(/\{date\}/gi, dateR).replace(/\{lieu\}/gi, lieuR).replace(/\{manque_total\}/gi, manqueTxt).replace(/\{manque\}/gi, manqueR).replace(/\{sexe_oppose_sing\}/gi, oppS).replace(/\{sexe_oppose\}/gi, opp).replace(/\{eux_elles\}/gi, eux).replace(/\{ils_elles\}/gi, ils).replace(/\{soirees\}/gi, sT);
     const subj = rep(subject);
-    const txt = rep(body) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
+    const txt = sansMarques(rep(body)) + `\n\n—\nPour ne plus recevoir ces e-mails : ${unsub}`;
     const btn = `<a href="${resa}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réserve ma place</a>`;
-    const htmlBody = esc(body).replace(/\{pr[ée]nom\}/gi, esc(prenom))
+    const htmlBody = miseEnForme(esc(body)).replace(/\{pr[ée]nom\}/gi, esc(prenom))
       .replace(/\{lien\}/gi, `<a href="${linkUrl}" style="color:#2f7d8a">${esc(linkUrl)}</a>`)
       .replace(/\{reserver\}/gi, btn)
       .replace(/\{sondage\}/gi, `<a href="${sondage}" style="display:inline-block;background:#156b54;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:26px;font-weight:700">Je réponds (10 secondes)</a>`)
       .replace(/\{date\}/gi, esc(dateR)).replace(/\{lieu\}/gi, esc(lieuR)).replace(/\{manque_total\}/gi, esc(manqueTxt)).replace(/\{manque\}/gi, esc(manqueR)).replace(/\{sexe_oppose_sing\}/gi, esc(oppS)).replace(/\{sexe_oppose\}/gi, esc(opp)).replace(/\{eux_elles\}/gi, eux).replace(/\{ils_elles\}/gi, ils)
       .replace(/\{soirees\}/gi, sH)
       .replace(/\n/g, '<br>');
-    const html = emailShell(htmlBody, unsub);
+    const html = emailShell(htmlBody, unsub, palette);
     try {
       await transporter.sendMail({ from: MAIL_FROM, to: r.email, subject: subj, text: txt, html,
         headers: {
@@ -1372,6 +1388,10 @@ function composePage() {
       <select id=tpl><option value="-1">— Partir d'un modèle… —</option>${TEMPLATES.map((t, i) => `<option value=${i}>${esc(t.name)}</option>`).join('')}</select>
       <p class=hint>Choisis un modèle pour pré-remplir l'objet et le message ci-dessous ; tu pourras ensuite l'ajuster (date, lieu…).</p>
 
+      <label>Couleur de l'e-mail</label>
+      <select name=palette>${Object.entries(PALETTES_MAIL).map(([k, v]) => `<option value="${k}">${v.nom}</option>`).join('')}</select>
+      <p class=hint>Les quatre palettes du site. Change-la d'une campagne à l'autre pour que les e-mails ne se ressemblent pas. Les e-mails automatiques (confirmation, paiement, annulation…) restent en Aqua.</p>
+
       <label>À qui ?</label>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <span>Genre <select name=genre><option value="">Tous</option>${['Femme', 'Homme', 'Non binaire'].map(opt).join('')}</select></span>
@@ -1388,6 +1408,7 @@ function composePage() {
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=auto checked> Envoyer uniquement aux personnes concernées par les soirées cochées (âge ±3, sexe, orientation)</label>
       <p class=hint>Ce filtre <b>s'ajoute</b> aux réglages « À qui ? » ci-dessus : si tu choisis Genre = Homme, seuls les hommes concernés recevront l'e-mail. Les personnes <b>déjà inscrites</b> à ces soirées (payées, en attente de paiement ou en liste d'attente) sont automatiquement écartées.</p>
       <p class=hint>Dans tous les cas, la balise <code>{soirees}</code> ne propose jamais à quelqu'un une soirée qu'il a déjà réservée.</p>
+      <p class=hint>Mise en forme : <code>**gras**</code> → <b>gras</b>, <code>*italique*</code> → <i>italique</i>, <code>__souligné__</code> → <u>souligné</u>. Dans la version texte brut, les marques sont retirées.</p>
       <p class=hint>Balises de relance (une seule soirée cochée) : <code>{manque}</code> = ce qui manque <b>dans le sexe du destinataire</b> (« 4 femmes » pour une femme, « 2 hommes » pour un homme) ; <code>{manque_total}</code> = tout ce qui manque (« 4 femmes et 2 hommes ») ; <code>{sexe_oppose}</code> = « hommes déjà inscrits » / « femmes déjà inscrites » ; <code>{sexe_oppose_sing}</code> = « l'homme » / « la femme » ; <code>{eux_elles}</code> et <code>{ils_elles}</code> = pronoms du groupe d'en face (une femme lit « eux » / « ils », un homme lit « elles »). <code>{sondage}</code> = bouton vers le questionnaire « qu'est-ce qu'on peut faire pour te satisfaire ? », réponses dans « Sondage ».</p>
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=force> Afficher <b>toutes</b> les dates dans <code>{soirees}</code>, même hors du profil du destinataire</label>
       <label class=hint style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type=checkbox name=sans_sondage> Ne pas envoyer aux personnes qui ont <b>déjà répondu au sondage</b>${sondageCount() ? ` (${sondageCount()} personne(s) écartée(s))` : ''}</label>
@@ -1432,6 +1453,8 @@ function testComposePage(done) {
         ${soirees.length ? soirees.map((so2) => `<label style="display:flex;align-items:center;gap:8px;font-weight:400"><input type=checkbox name=soirees value="${esc(so2.code)}"> ${esc(so2.date_texte || so2.code)} (${esc(so2.code)})</label>`).join('') : '<span class=hint>Aucune soirée active.</span>'}
       </div>
       <p class=hint>Pour ce test, les soirées cochées s'affichent toujours (même si ton adresse n'est pas inscrite) afin que tu voies le rendu. Les liens « Réserver » ne fonctionnent que si l'adresse de test est un inscrit.</p>
+      <label>Couleur de l'e-mail</label>
+      <select name=palette>${Object.entries(PALETTES_MAIL).map(([k, v]) => `<option value="${k}">${v.nom}</option>`).join('')}</select>
       <label>Objet</label>
       <input id=subject name=subject required style="width:100%">
       <label>Message</label>
@@ -1723,13 +1746,45 @@ function soireeMetaShort(so) {
   if (t) p.push(t);
   return p.join(' · ');
 }
-function emailShell(inner, unsub) {
-  const tile = `${SITE_URL}/zellige-email.png`;
-  return `<div style="background:#f5faf8;padding:24px 12px;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif"><div style="max-width:560px;margin:auto;background:#ffffff;border:1px solid #d7e6df;border-radius:14px;overflow:hidden">`
-  + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr><td background="${tile}" bgcolor="#156b54" style="background-color:#156b54;background-image:url('${tile}');background-repeat:repeat;padding:34px 28px;text-align:center;border-bottom:3px solid #d0aa54"><div style="font-size:30px;font-weight:800;letter-spacing:.5px;color:#d0aa54">Soirée Match</div><div style="color:#d0aa54;font-size:12px;letter-spacing:2px;margin-top:9px">RENCONTRES CÉLIBATAIRES · LAUSANNE</div></td></tr></table>`
-  + `<div style="padding:28px;color:#1b2a24;font-size:15px;line-height:1.6">${inner}</div>`
-  + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr><td background="${tile}" bgcolor="#156b54" style="background-color:#156b54;background-image:url('${tile}');background-repeat:repeat;padding:24px 28px;text-align:center"><div style="font-size:17px;font-weight:700;letter-spacing:.6px"><a href="${SITE_URL}" style="color:#d0aa54;text-decoration:none">soireematch.com</a></div><div style="margin-top:12px;font-size:12px;color:#cfe6db;line-height:1.6">Tu reçois cet e-mail car tu t'es inscrit(e) à la Soirée Match.<br><a href="${unsub}" style="color:#e8d39a">Se désinscrire</a> · <a href="mailto:contact@soireematch.com" style="color:#e8d39a">contact@soireematch.com</a></td></tr></table>`
-  + `</div></div>`;
+// ---------- Gabarit des e-mails : palettes du site, motif en filigrane, arrondis, vagues ----------
+// Les images (motif, vagues) sont hébergées sur le site : Gmail refuse les images incorporées.
+// Outlook PC ignore dégradé, arrondis et images de fond : il affiche la couleur unie « a ». Lisible, juste plat.
+const PALETTES_MAIL = {
+  aqua:       { nom: 'Aqua (défaut)', a: '#2f7d8a', b: '#6fc0c0' },
+  rose:       { nom: 'Rose',          a: '#d94f77', b: '#eaa6b4' },
+  brume:      { nom: 'Brume',         a: '#2c5f8a', b: '#54a0c9' },
+  terracotta: { nom: 'Terracotta',    a: '#c85a3a', b: '#e0a06a' },
+};
+const paletteMail = (k) => PALETTES_MAIL[k] ? k : 'aqua';
+// Les e-mails ont été écrits pour un fond blanc : on adapte leurs couleurs au fond coloré.
+function adapteCouleurs(inner, P) {
+  return String(inner)
+    // Les boutons passent par un jeton, sinon la règle « liens » ci-dessous repeindrait leur texte en blanc.
+    .replace(/background:#156b54;color:#fff(?:fff)?/g, 'background:#ffffff;color:__BTN__')
+    .replace(/background:#2f7d8a;color:#fff(?:fff)?/g, 'background:#ffffff;color:__BTN__')
+    .replace(/color:#156b54/g, 'color:__BTN__')
+    .replace(/color:#2f7d8a/g, 'color:#ffffff;text-decoration:underline')
+    .replace(/color:#(?:5b6b64|7b8a83|8a9a99|566b6a|999|666)\b/g, 'color:rgba(255,255,255,.82)')
+    .replace(/color:#(?:1b2a24|1e2f30|1c7a3f)\b/g, 'color:#ffffff')
+    .replace(/color:#c0392b/g, 'color:#ffd3cc')
+    .replace(/background:#(?:eaf3f2|eefaee|fff6e5|f6fbfa|f5faf8|f2f8f7|eef5f3|ecf4f3)\b/g, 'background:rgba(255,255,255,.12)')
+    .replace(/__BTN__/g, P.a);
+}
+function emailShell(inner, unsub, palette = 'aqua') {
+  const P = PALETTES_MAIL[paletteMail(palette)];
+  const motif = `${SITE_URL}/motif-email.png`, vh = `${SITE_URL}/vague-haut.png`, vb = `${SITE_URL}/vague-bas.png`;
+  const grave = 'text-shadow:0 2px 2px rgba(0,0,0,.35),0 -1px 0 rgba(255,255,255,.35)';
+  return `<div style="background:#101820;padding:24px 12px;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">`
+    + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;max-width:560px;margin:auto;border-radius:30px;overflow:hidden"><tr><td background="${motif}" bgcolor="${P.a}" style="background-color:${P.a};background-image:url('${motif}'),linear-gradient(160deg,${P.a},${P.b});background-repeat:repeat,no-repeat;background-size:48px 48px,cover;border-radius:30px;color:#ffffff">`
+    // en-tête
+    + `<div style="padding:44px 28px 28px;text-align:center"><div style="font-family:Georgia,'Times New Roman',serif;font-size:40px;letter-spacing:1px;line-height:1.05;color:#ffffff;${grave}">Soirée Match</div><div style="font-size:11px;letter-spacing:3px;margin-top:14px;color:#ffffff;opacity:.85">RENCONTRES CÉLIBATAIRES · LAUSANNE</div></div>`
+    + `<img src="${vh}" width="100%" height="40" alt="" style="display:block;width:100%;height:40px">`
+    // bande de texte
+    + `<div style="background:rgba(0,0,0,.28);padding:26px 30px 30px;color:#ffffff;font-size:15px;line-height:1.7">${adapteCouleurs(inner, P)}</div>`
+    + `<img src="${vb}" width="100%" height="40" alt="" style="display:block;width:100%;height:40px">`
+    // pied
+    + `<div style="padding:10px 28px 34px;text-align:center;font-size:12px;line-height:1.7;color:#ffffff"><div style="font-family:Georgia,'Times New Roman',serif;font-size:17px;letter-spacing:.8px"><a href="${SITE_URL}" style="color:#ffffff;text-decoration:none">soireematch.com</a></div><div style="margin-top:10px;opacity:.9">Tu reçois cet e-mail car tu t'es inscrit(e) à la Soirée Match.<br><a href="${unsub}" style="color:#ffffff">Se désinscrire</a> · <a href="mailto:contact@soireematch.com" style="color:#ffffff">contact@soireematch.com</a></div></div>`
+    + `</td></tr></table></div>`;
 }
 const isParity = (so) => (so.type === 'Hétéro');
 const otherGenre = (g) => (g === 'Femme' ? 'Homme' : 'Femme');
@@ -2849,10 +2904,11 @@ const server = http.createServer(async (req, res) => {
         for (let i = recips.length - 1; i >= 0; i--) if (dejaRepondu.has(String(recips[i].email || '').toLowerCase())) recips.splice(i, 1);
       }
       const tpl = (d.tpl_name || '').trim();
+      const palette = paletteMail(d.palette);
       const emails = recips.map((r) => r.email).join(', ');
       const genres = [...new Set(recips.map((r) => r.genre).filter(Boolean))].join(', ');
-      const camp = db.prepare('INSERT INTO campaigns(sent_at,subject,body,tpl,soirees,tranches,recipients,sent,failed,recipient_list,genres) VALUES(?,?,?,?,?,?,?,0,0,?,?)')
-        .run(nowIso(), subject, body, tpl, selected.map((x) => x.code).join(', '), [...new Set(selected.map((x) => x.tranche).filter(Boolean))].join(', '), recips.length, emails, genres);
+      const camp = db.prepare('INSERT INTO campaigns(sent_at,subject,body,tpl,soirees,tranches,recipients,sent,failed,recipient_list,genres,palette) VALUES(?,?,?,?,?,?,?,0,0,?,?,?)')
+        .run(nowIso(), subject, body, tpl, selected.map((x) => x.code).join(', '), [...new Set(selected.map((x) => x.tranche).filter(Boolean))].join(', '), recips.length, emails, genres, palette);
       // En arrière-plan (non bloquant), puis copie d'archive dans la boîte contact@.
       // La copie part APRÈS : runCampaign partage un compteur global, deux envois simultanés fausseraient les décomptes.
       const toutesDates = (d.force === 'on' || d.force === '1');
@@ -2863,14 +2919,14 @@ const server = http.createServer(async (req, res) => {
           subject: `Sondage envoyé à ${recips.length} personne(s) — résultats`,
           text: `Le sondage « ${subject} » part vers ${recips.length} personne(s).\n\nLes réponses s'enregistrent au fur et à mesure, une par personne. La synthèse (par réponse, par sexe, par tranche d'âge, textes libres, détail par personne) est ici :\n${SITE_URL}/admin/sondage\n\nGarde ce lien : la page se met à jour toute seule, il n'y aura pas d'autre e-mail.` }).catch(() => {});
       }
-      runCampaign(recips, subject, body, linkUrl, so, selected, toutesDates, Number(camp.lastInsertRowid))
+      runCampaign(recips, subject, body, linkUrl, so, selected, toutesDates, Number(camp.lastInsertRowid), palette)
         .then(() => {
           if (!ARCHIVE_TO) return;
           // La copie d'archive est rendue avec le genre du ciblage (ou celui du premier destinataire réel),
           // sinon les balises {manque} / {sexe_oppose} / {eux_elles} tombent sur leur version neutre, qui ne
           // correspond à aucun e-mail réellement parti.
           const gCopie = genre || (recips[0] && recips[0].genre) || '';
-          return runCampaign([{ prenom: 'Marc', email: ARCHIVE_TO, genre: gCopie, recherche: '', annee: 0, langues: '' }], `[COPIE${gCopie ? ' — rendu ' + gCopie.toLowerCase() : ''}] ` + subject, body, linkUrl, so, selected, true);
+          return runCampaign([{ prenom: 'Marc', email: ARCHIVE_TO, genre: gCopie, recherche: '', annee: 0, langues: '' }], `[COPIE${gCopie ? ' — rendu ' + gCopie.toLowerCase() : ''}] ` + subject, body, linkUrl, so, selected, true, null, palette);
         })
         .catch(() => {});
       return send(res, 302, '', { Location: '/admin' });
@@ -2888,7 +2944,7 @@ const server = http.createServer(async (req, res) => {
       const linkUrl = so ? soireeLink(so.code) : SITE_URL;
       const row = db.prepare('SELECT prenom,email,genre,recherche,annee,langues FROM inscriptions WHERE lower(email)=lower(?)').get(testEmail);
       const recips = [row || { prenom: 'Test', email: testEmail, genre: '', recherche: '', annee: 0, langues: '' }];
-      runCampaign(recips, subject, body, linkUrl, so, selected, true);   // true = afficher les soirées cochées (aperçu)
+      runCampaign(recips, subject, body, linkUrl, so, selected, true, null, paletteMail(d.palette));   // true = afficher les soirées cochées (aperçu)
       return send(res, 302, '', { Location: '/admin/test?done=' + encodeURIComponent(testEmail) });
     }
     if (p === '/admin/emails' && req.method === 'GET') return send(res, 200, adminEmailsPage(Object.fromEntries(url.searchParams)));
@@ -2901,7 +2957,7 @@ const server = http.createServer(async (req, res) => {
         const so = selected.length === 1 ? selected[0] : null;
         const linkUrl = so ? soireeLink(so.code) : SITE_URL;
         const gCopie = (c.genres || '').split(',')[0].trim();
-        runCampaign([{ prenom: 'Marc', email: to, genre: gCopie, recherche: '', annee: 0, langues: '' }], `[COPIE${gCopie ? ' — rendu ' + gCopie.toLowerCase() : ''}] ` + c.subject, c.body, linkUrl, so, selected, true);
+        runCampaign([{ prenom: 'Marc', email: to, genre: gCopie, recherche: '', annee: 0, langues: '' }], `[COPIE${gCopie ? ' — rendu ' + gCopie.toLowerCase() : ''}] ` + c.subject, c.body, linkUrl, so, selected, true, null, paletteMail(c.palette));
       }
       return send(res, 302, '', { Location: '/admin/emails?done=1' });
     }
