@@ -115,7 +115,7 @@ function sendConfirmation(i) {
   const MECA = [
     "Comment ça marche : tu t'inscris à une soirée gratuitement, rien n'est débité.",
     "Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place.",
-    "Chaque soirée est confirmée ou annulée le dimanche qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.",
+    "Chaque soirée est confirmée ou annulée le dimanche qui précède pour éviter à tous les inscrits de réserver leur soirée jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.",
     "Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.",
   ];
   const meca = MECA.join('\n\n');
@@ -287,7 +287,7 @@ const SONDAGE_OPTIONS = [
   ['confiance', 'J\'ai de la peine à faire confiance.'],
   ['couple',    'Je ne suis plus célibataire.'],
   ['ami',       'Je viendrais plus volontiers avec un(e) ami(e).'],
-  ['horaire',   '20h30, c\'est trop tard ou trop tôt pour moi.'],
+  ['horaire',   '20h, c\'est trop tard ou trop tôt pour moi.'],
   ['concept',   'Je n\'ai pas bien compris ce qui se passe sur place.'],
   ['blocage',   'Il y a un truc qui me bloque :'],
 ];
@@ -1186,6 +1186,38 @@ Ta team Soirée Match`;
 
 const TEMPLATES = [
   {
+    name: 'Résultats du sondage — on vous a posé la question',
+    subject: 'On vous a posé la question. Voici vos réponses.',
+    body: `Bonjour {prenom},
+
+Il y a dix jours, on t'a demandé ce qu'on pouvait faire pour te satisfaire. **30 personnes sur 111** ont répondu — merci à eux. Voilà ce que ça dit, sans détour, et ce qu'on en fait.
+
+**La réponse la plus fréquente : « Tout va bien comme ça, je viendrai quand une date me conviendra. »** 10 personnes. Rien ne cloche pour elles, elles attendent le bon moment. C'est à la fois rassurant et un rappel : les soirées n'ont lieu que si on s'inscrit avant, pas le jour même.
+
+**Le mardi** : 9 personnes préféreraient un autre jour — les uns le lundi, les autres le mercredi. Les bars nous laissent leurs soirs calmes, pas les soirs de forte affluence, ce qui limite le choix.
+*Ce qu'on fait :* nous allons proposer des soirées le lundi ou le mercredi, selon les possibilités des bars.
+
+**L'heure** : 6 personnes trouvent 20h30 trop tard, surtout avec les transports publics et l'hiver qui arrive.
+*Ce qu'on fait :* nos soirées commenceront désormais à 20h.
+
+**Les soirées annulées** : 7 personnes s'étaient inscrites à une soirée qui n'a finalement pas eu lieu. On le sait, et c'est ce qui nous préoccupe.
+*Ce qu'on fait :* c'est pour ça que l'inscription est désormais gratuite et que tu ne paies qu'une fois la soirée confirmée, le dimanche d'avant. Tu ne risques plus rien à t'inscrire — et chaque inscription rapproche la soirée de son minimum.
+
+**La distance** : 6 personnes aimeraient des soirées ailleurs qu'à Lausanne — Vevey (3 demandes), Morges, Fribourg, et une autre ville.
+*Ce qu'on fait :* on note. Dès que Lausanne tourne, on essaiera ailleurs — c'était prévu de toute façon.
+
+Et puis quelques réponses isolées, qu'on a lues avec attention : venir plutôt avec un(e) ami(e), la timidité, un doute sur ce qui se passe vraiment sur place. L'une d'entre vous a même écrit, comme blocage : « la danse ».
+
+On te rassure tout de suite : on ne danse pas — en tout cas pas d'office. La soirée commence par des jeux sociologiques qui permettent de se connaître facilement, même sans parler (ouf pour les timides). Ensuite on discute, on échange, comme dans n'importe quelle soirée de rencontres. Puis d'autres jeux pour faire connaissance, et pour ceux qui en ont envie, un peu de danse. Rien d'obligatoire : il y a toujours ceux qui aiment danser et ceux qui n'aiment pas. Mais la danse a son intérêt : c'est un langage du corps, on s'y découvre autrement. Et dans un cas comme dans l'autre, c'est un point commun de plus — entre ceux qui dansent, et entre ceux qui ne dansent pas.
+
+**La prochaine soirée 40-50 ans a toujours 6 inscrits. Il en manque 4 pour qu'elle ait lieu. Vous êtes 36 dans la bonne tranche d'âge à pouvoir encore venir — on vous attend.**
+
+{soirees}
+
+Merci encore,
+L'équipe Soirée Match`,
+  },
+  {
     name: 'Sondage — qu\'est-ce qu\'on peut faire pour te satisfaire ?',
     subject: 'Alors, qu\'est-ce qu\'on peut faire pour te satisfaire ?',
     body: `Bonjour {prenom},
@@ -1196,7 +1228,7 @@ Alors, qu'est-ce qu'on peut faire pour te satisfaire ? Dix secondes, treize case
 
 {sondage}
 
-Promis, on lit tout, et on s'adapte. Mardi, Lausanne, le format : rien n'est gravé dans le marbre.
+Promis, on lit tout, et on s'adapte. Le jour, l'heure, Lausanne, le format : rien n'est gravé dans le marbre.
 
 Merci d'avance,
 L'équipe Soirée Match`,
@@ -1236,7 +1268,7 @@ Comment ça se passe : tu t'inscris en un clic, gratuitement — rien n'est déb
 
 Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place.
 
-Chaque soirée est confirmée ou annulée le dimanche qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
+Chaque soirée est confirmée ou annulée le dimanche qui précède pour éviter à tous les inscrits de réserver leur soirée jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
 
 Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.
 
@@ -1263,7 +1295,7 @@ Comment ça se passe : tu t'inscris en un clic, gratuitement — rien n'est déb
 
 Les places sont limitées volontairement pour qu'il y ait une constante parité entre hommes et femmes et que personne ne reste seul dans son coin. Si une place n'est pas disponible pour ton genre, tu passes en liste d'attente (avec ta place conservée dans l'ordre d'inscription, n'aie pas d'inquiétude) et tu reçois automatiquement un e-mail dès que tu peux t'inscrire et tu as alors 12h pour confirmer ta place.
 
-Chaque soirée est confirmée ou annulée le dimanche qui précède pour éviter à tous les inscrits de réserver leur soirée du mardi jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
+Chaque soirée est confirmée ou annulée le dimanche qui précède pour éviter à tous les inscrits de réserver leur soirée jusqu'au dernier moment et après la voir être annulée. Tu as ainsi le temps de prévoir autre chose. C'est dans l'intérêt de tout le monde.
 
 Quand la soirée est confirmée, tu reçois alors un e-mail pour effectuer le paiement. Tu as 24h pour le faire sinon ta place est annulée ce qui permettra à quelqu'un d'autre de s'inscrire.
 
@@ -1292,10 +1324,10 @@ L'équipe Soirée Match`,
   },
   {
     name: 'Relance 1 — le sauvetage',
-    subject: 'Il nous manque encore {manque} pour mardi',
+    subject: 'Il nous manque encore {manque} pour la soirée',
     body: `Bonjour {prenom},
 
-C'est bientôt mardi, et il nous manque encore {manque} pour garantir une belle parité et une soirée réussie.
+La soirée approche, et il nous manque encore {manque} pour garantir une belle parité et une soirée réussie.
 
 Les {sexe_oppose} attendent ta décision avec impatience. Il te suffit d'un clic pour leur éviter une soirée à parler entre {eux_elles} de la pluie et du beau temps.
 
@@ -1321,7 +1353,7 @@ L'équipe Soirée Match`,
     subject: 'Ton chat ne t\'écrira jamais ça',
     body: `Bonjour {prenom},
 
-Mardi approche, et il nous manque encore {manque} pour que la soirée ait lieu.
+La soirée approche, et il nous manque encore {manque} pour qu'elle ait lieu.
 
 On sait : ton canapé est confortable, ton chat est de bonne compagnie et la série n'est pas finie. Mais ton chat ne t'écrira jamais : « J'ai aimé te rencontrer hier soir et j'ai hâte de te revoir. »
 
@@ -1347,7 +1379,7 @@ L'équipe Soirée Match`,
     subject: 'J-3 : il manque {manque}',
     body: `Bonjour {prenom},
 
-État des lieux à J-3 : {manque} manquent encore pour que la soirée de mardi soit validée.
+État des lieux à J-3 : {manque} manquent encore pour que la soirée soit validée.
 
 C'est le genre de situation où une seule personne change tout — et là, cette personne, c'est toi. Pas de pression, mais un peu quand même.
 
