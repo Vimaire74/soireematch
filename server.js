@@ -794,13 +794,56 @@ function buildVisitsPanel(v) {
 // ---------- Static ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.webmanifest': 'application/manifest+json' };
+// ---------- Référencement : données structurées injectées dans la page d'accueil ----------
+// Organization + un Event par soirée active à venir + FAQPage (lue dans le HTML de la FAQ, pas de doublon à entretenir).
+function jsonLdAccueil(html) {
+  const org = { '@type': 'Organization', '@id': `${SITE_URL}/#org`, name: 'Soirée Match', url: SITE_URL + '/', logo: `${SITE_URL}/apple-touch-icon.png`, email: 'contact@soireematch.com',
+    sameAs: ['https://www.instagram.com/soiree.match/'], areaServed: ['Lausanne', 'Canton de Vaud', 'Suisse romande', 'Romandie'],
+    description: 'Soirées célibataires et soirées rencontres à Lausanne, pour le canton de Vaud et toute la Suisse romande : petits groupes par tranche d\'âge, animés par un thérapeute, pour trouver l\'amour en Romandie sans appli ni speed dating.',
+    keywords: 'soirée célibataires, soirées rencontres, trouver l\'amour, Lausanne, Vaud, Suisse romande, Romandie' };
+  let events = [];
+  try {
+    const rows = db.prepare("SELECT * FROM soirees WHERE actif=1 AND COALESCE(annulee,0)=0 AND date_start IS NOT NULL AND date_start > ? ORDER BY date_start").all(nowIso());
+    events = rows.map((so) => {
+      const prix = parseFloat(String(so.prix || '').replace(',', '.')) || 20;
+      const quoi = so.type === 'Hétéro' ? 'célibataires hétéros' : (so.type ? 'célibataires ' + so.type.toLowerCase() : 'célibataires');
+      return { '@type': 'SocialEvent', '@id': `${SITE_URL}/#soiree-${so.code}`,
+        name: `Soirée Match — soirée rencontre ${quoi}${so.tranche ? ' ' + so.tranche + ' ans' : ''} à Lausanne`,
+        description: `Soirée rencontre pour ${quoi}${so.tranche ? ' de ' + so.tranche + ' ans' : ''} à Lausanne (Vaud) : jeux pour faire connaissance, puis discussion libre. Inscription gratuite, 20 CHF à régler une fois la soirée confirmée.`,
+        startDate: new Date(so.date_start).toISOString(), eventStatus: 'https://schema.org/EventScheduled',
+        eventAttendanceMode: 'https://schema.org/OfflineEventAttendanceMode',
+        location: { '@type': 'Place', name: (so.lieu || 'Lausanne').split(',')[0], address: { '@type': 'PostalAddress', streetAddress: (so.lieu || '').split(',').slice(1).join(',').trim() || undefined, addressLocality: 'Lausanne', addressRegion: 'Vaud', addressCountry: 'CH' } },
+        organizer: { '@id': `${SITE_URL}/#org` },
+        offers: { '@type': 'Offer', price: prix, priceCurrency: 'CHF', url: SITE_URL + '/#dates', availability: 'https://schema.org/InStock' },
+        inLanguage: 'fr', url: SITE_URL + '/#dates' };
+    });
+  } catch { events = []; }
+  const faq = [];
+  const re = /<details><summary>([\s\S]*?)<\/summary><p>([\s\S]*?)<\/p><\/details>/g;
+  let m; const strip = (x) => x.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').trim();
+  while ((m = re.exec(html))) faq.push({ '@type': 'Question', name: strip(m[1]), acceptedAnswer: { '@type': 'Answer', text: strip(m[2]) } });
+  const graph = [org, ...events];
+  if (faq.length) graph.push({ '@type': 'FAQPage', mainEntity: faq });
+  return `<script type="application/ld+json">${JSON.stringify({ '@context': 'https://schema.org', '@graph': graph })}</script>`;
+}
+function sitemapXml() {
+  let last = new Date().toISOString().slice(0, 10);
+  try { const r = db.prepare('SELECT MAX(created_at) m FROM soirees').get(); if (r && r.m) last = String(r.m).slice(0, 10); } catch { /* rien */ }
+  const today = new Date().toISOString().slice(0, 10); if (last < '2026-10-26') last = today > '2026-10-26' ? '2026-10-26' : today;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${SITE_URL}/</loc>\n    <lastmod>${last}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>1.0</priority>\n  </url>\n</urlset>\n`;
+}
 function serveStatic(res, urlPath) {
   let rel = decodeURIComponent(urlPath.split('?')[0]);
   if (rel === '/' || rel === '') rel = '/index.html';
+  if (rel === '/sitemap.xml') return send(res, 200, sitemapXml(), { 'Content-Type': 'application/xml; charset=utf-8' });
   const file = path.normalize(path.join(ROOT, 'public', rel));
   if (!file.startsWith(path.join(ROOT, 'public'))) return send(res, 403, 'Forbidden');
   fs.readFile(file, (err, buf) => {
     if (err) return send(res, 404, 'Introuvable');
+    if (rel === '/index.html') {
+      const html = buf.toString('utf8');
+      return send(res, 200, html.replace('<!--SEO-JSONLD-->', jsonLdAccueil(html)), { 'Content-Type': MIME['.html'] });
+    }
     send(res, 200, buf, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
   });
 }
